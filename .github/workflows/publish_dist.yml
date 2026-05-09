@@ -1,0 +1,37 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [ published ]
+
+permissions:
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}
+
+jobs:
+  build-dist:
+    uses: ./.github/workflows/dist_build.yml
+
+  publish-to-pypi:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: pypi
+
+    needs: build-dist
+
+    steps:
+      - &download_dist
+        name: Download Distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build-dist.outputs.artifact_name }}
+          run-id: ${{ needs.build-dist.outputs.run_id }}
+          path: ./dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true

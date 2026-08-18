@@ -1,4 +1,6 @@
-# vatic
+![Vatic](assets/vatic-banner.png)
+
+# Vatic
 
 Open Source Risk Analysis.
 

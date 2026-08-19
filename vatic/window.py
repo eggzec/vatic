@@ -30,13 +30,14 @@ from pathlib import Path
 
 import mcerp
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QStatusBar,
@@ -67,18 +69,25 @@ from vatic.analytics import (
 )
 from vatic.assumption import Assumption
 from vatic.chart import PlotCanvas
-from vatic.dialogs import ParameterDialog
+from vatic.dialogs import ExcelHelpDialog, ForecastDialog, ParameterDialog
 from vatic.distributions import (
+    RANDOM_SEED,
     build_variable,
     default_parameters,
     distribution_labels,
     get_distribution_spec,
+    seed_sampler,
 )
+from vatic.excel import ExcelLinkError, excel_available
+from vatic.excel.runner import ASSUMPTION_TINT, FORECAST_TINT
 from vatic.formula import evaluate_formula
 from vatic.logger import get_logger
 from vatic.reporting import export_pdf_report as write_pdf_report
 from vatic.reporting import export_pptx_report as write_pptx_report
+from vatic.resources import app_icon, load_bundled_fonts, rounded_logo_pixmap
+from vatic.sheetmodel import CellRef, SheetAssumption, SheetForecast, SheetModel
 from vatic.storage import AnalysisStore
+from vatic.theme import build_stylesheet
 
 
 CHART_TYPES = [
@@ -125,7 +134,10 @@ class VaticWindow(QMainWindow):
         LOGGER.debug("Initializing vatic main window")
 
         self.setWindowTitle(f"vatic {__version__}")
-        self.resize(1320, 820)
+        # Set on the window as well as the application, so the icon is present
+        # even when VaticWindow is constructed directly instead of via main().
+        self.setWindowIcon(app_icon())
+        self.resize(1340, 860)
 
         self.store = AnalysisStore(Path.cwd() / "vatic.db")
         self.current_analysis_id: int | None = None
@@ -145,14 +157,30 @@ class VaticWindow(QMainWindow):
         ] = []
         self._export_jobs: dict[int, tuple[QThread, str, str, str]] = {}
 
+        # Spreadsheet link. None until a workbook is connected, at which
+        # point Run Simulation drives Excel instead of the in-app model.
+        self.excel_session: object | None = None
+        self.sheet_model = SheetModel()
+
+        load_bundled_fonts()
+        # Rounded popups need a translucent window or the square native
+        # window corners show through behind the border radius.
+        QApplication.instance().installEventFilter(self)
         self._build_menu_bar()
         self._apply_styles()
         self.setStatusBar(QStatusBar(self))
 
         root = QWidget()
         self.setCentralWidget(root)
-        root_layout = QGridLayout(root)
-        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        root_layout.addWidget(self._build_header())
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(14, 12, 14, 12)
 
         sheets_panel = self._build_sheets_section()
         assumptions_panel = self._build_assumptions_section()
@@ -162,28 +190,147 @@ class VaticWindow(QMainWindow):
         left_panel = QWidget()
         left_layout = QGridLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setHorizontalSpacing(8)
-        left_layout.setVerticalSpacing(4)
-        left_layout.setRowStretch(0, 1)
-        left_layout.setRowStretch(1, 6)
+        left_layout.setHorizontalSpacing(10)
+        left_layout.setVerticalSpacing(10)
+        left_layout.setRowStretch(0, 2)
+        left_layout.setRowStretch(1, 7)
         left_layout.setRowStretch(2, 3)
         left_layout.addWidget(sheets_panel, 0, 0)
         left_layout.addWidget(assumptions_panel, 1, 0)
         left_layout.addWidget(simulation_panel, 2, 0)
 
+        # The input sidebar is dense; letting it scroll keeps the window's
+        # minimum height inside a 1366x768 laptop screen instead of forcing a
+        # window taller than the display.
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_panel)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(360)
+
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
+        splitter.setHandleWidth(9)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(results_panel)
         splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 6)
+        splitter.setStretchFactor(1, 7)
+        splitter.setSizes([460, 900])
 
-        root_layout.addWidget(splitter, 0, 0)
+        body_layout.addWidget(splitter)
+        root_layout.addWidget(body, 1)
 
         self.load_defaults()
         self._reload_analysis_list()
         self._sync_row_actions()
         self._update_window_caption()
         LOGGER.debug("Vatic window ready")
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Round popup windows and stop scroll wheels editing values.
+
+        Two separate fixes share this filter:
+
+        A ``QMenu`` and a combo box drop-down are top level windows, so a
+        border radius in the style sheet leaves the square native corners
+        painted behind the rounded edge unless the background is punched out.
+
+        A spin box or combo box inside the scrolling sidebar swallows the
+        wheel and silently edits itself, so a user scrolling past the
+        iteration count changes it by accident. Unfocused controls therefore
+        hand the wheel back to the scroll area.
+
+        Args:
+            watched: The object the event was sent to.
+            event: The event being delivered.
+
+        Returns:
+            True to swallow the event, otherwise the base class result.
+        """
+        if not isinstance(watched, QWidget):
+            return super().eventFilter(watched, event)
+
+        if event.type() == QEvent.Show and watched.isWindow():
+            if isinstance(watched, QMenu | QAbstractItemView):
+                if not watched.testAttribute(Qt.WA_TranslucentBackground):
+                    self._round_popup(watched)
+
+        if event.type() == QEvent.Wheel and isinstance(
+            watched, QComboBox | QSpinBox
+        ):
+            if not watched.hasFocus():
+                event.ignore()
+                return True
+
+        return super().eventFilter(watched, event)
+
+    def _build_header(self) -> QWidget:
+        """Build the branded application header.
+
+        Returns:
+            The header widget, carrying the logo, the active analysis name
+            and the primary simulation action.
+        """
+        header = QWidget()
+        header.setObjectName("appHeader")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
+
+        mark = QLabel()
+        mark.setPixmap(rounded_logo_pixmap(30))
+        mark.setFixedSize(QSize(30, 30))
+        layout.addWidget(mark)
+
+        wordmark_box = QWidget()
+        wordmark_layout = QVBoxLayout(wordmark_box)
+        wordmark_layout.setContentsMargins(0, 0, 0, 0)
+        wordmark_layout.setSpacing(0)
+
+        wordmark = QLabel("vatic")
+        wordmark.setObjectName("brandWordmark")
+        tagline = QLabel("OPEN SOURCE RISK ANALYSIS")
+        tagline.setObjectName("brandTagline")
+        wordmark_layout.addWidget(wordmark)
+        wordmark_layout.addWidget(tagline)
+        layout.addWidget(wordmark_box)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.VLine)
+        divider.setFixedWidth(1)
+        divider.setFixedHeight(30)
+        layout.addSpacing(6)
+        layout.addWidget(divider)
+        layout.addSpacing(6)
+
+        self.header_analysis_label = QLabel(self.current_analysis_name)
+        self.header_analysis_label.setObjectName("analysisName")
+        layout.addWidget(self.header_analysis_label)
+
+        layout.addStretch(1)
+
+        self.run_button = QPushButton("Run Simulation")
+        self.run_button.setProperty("variant", "primary")
+        self.run_button.setToolTip("Run the Monte Carlo simulation (F5)")
+        self.run_button.clicked.connect(self.run_simulation)
+        layout.addWidget(self.run_button)
+
+        return header
+
+    @staticmethod
+    def _round_popup(widget: QWidget) -> None:
+        """Punch out a popup's square window so its border radius shows.
+
+        A menu or a combo box drop-down is a top level window. Giving it a
+        border radius in the style sheet otherwise leaves the square native
+        corners painted behind the rounded edge.
+
+        Args:
+            widget: The popup window to make translucent.
+        """
+        widget.setAttribute(Qt.WA_TranslucentBackground, True)
+        widget.setWindowFlag(Qt.FramelessWindowHint, True)
+        widget.setWindowFlag(Qt.NoDropShadowWindowHint, True)
 
     def _build_menu_bar(self) -> None:
         menu = self.menuBar()
@@ -237,9 +384,14 @@ class VaticWindow(QMainWindow):
         edit_menu.addAction(self.remove_row_action)
 
         edit_menu.addSeparator()
-        self.add_formula_action = QAction("Add Formula", self)
-        self.add_formula_action.triggered.connect(self.add_formula_row)
+        self.add_formula_action = QAction("Add Formula...", self)
+        self.add_formula_action.triggered.connect(self.add_formula_via_dialog)
         edit_menu.addAction(self.add_formula_action)
+
+        self.edit_formula_action = QAction("Edit Formula...", self)
+        self.edit_formula_action.setEnabled(False)
+        self.edit_formula_action.triggered.connect(self.edit_selected_formula)
+        edit_menu.addAction(self.edit_formula_action)
 
         self.remove_formula_action = QAction("Remove Formula", self)
         self.remove_formula_action.setEnabled(False)
@@ -258,139 +410,49 @@ class VaticWindow(QMainWindow):
         run_action.triggered.connect(self.run_simulation)
         view_menu.addAction(run_action)
 
+        sheet_menu = menu.addMenu("&Spreadsheet")
+        self.connect_workbook_action = QAction("Connect Workbook...", self)
+        self.connect_workbook_action.triggered.connect(self.connect_workbook)
+        sheet_menu.addAction(self.connect_workbook_action)
+
+        self.disconnect_workbook_action = QAction("Disconnect", self)
+        self.disconnect_workbook_action.setEnabled(False)
+        self.disconnect_workbook_action.triggered.connect(
+            self.disconnect_workbook
+        )
+        sheet_menu.addAction(self.disconnect_workbook_action)
+
+        sheet_menu.addSeparator()
+        self.tag_assumption_action = QAction(
+            "Tag Selected Cell as Assumption...", self
+        )
+        self.tag_assumption_action.setEnabled(False)
+        self.tag_assumption_action.triggered.connect(self.tag_assumption)
+        sheet_menu.addAction(self.tag_assumption_action)
+
+        self.tag_forecast_action = QAction(
+            "Tag Selected Cell as Forecast...", self
+        )
+        self.tag_forecast_action.setEnabled(False)
+        self.tag_forecast_action.triggered.connect(self.tag_forecast)
+        sheet_menu.addAction(self.tag_forecast_action)
+
+        self.clear_tags_action = QAction("Clear Tagged Cells", self)
+        self.clear_tags_action.setEnabled(False)
+        self.clear_tags_action.triggered.connect(self.clear_sheet_tags)
+        sheet_menu.addAction(self.clear_tags_action)
+
         help_menu = menu.addMenu("&Help")
+        help_menu.addAction("Using vatic with Excel...", self.show_excel_help)
+        help_menu.addSeparator()
         help_menu.addAction("Info", self.show_info)
 
+        for submenu in menu.findChildren(QMenu):
+            self._round_popup(submenu)
+
     def _apply_styles(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow {
-                background: #eef3fb;
-            }
-            QWidget {
-                color: #000000;
-                selection-background-color: #cfe3ff;
-                selection-color: #10233f;
-                font-family: "Segoe UI";
-                font-size: 9pt;
-            }
-            QMenuBar {
-                background: #f3f7fd;
-                border-bottom: 1px solid #c7d6ea;
-            }
-            QMenuBar::item {
-                background: transparent;
-                padding: 5px 10px;
-            }
-            QMenuBar::item:selected {
-                background: #dce8fb;
-                border: 1px solid #9cb8dd;
-            }
-            QMenu {
-                background: #ffffff;
-                border: 1px solid #a9bbd8;
-            }
-            QMenu::item:selected {
-                background: #dce8fb;
-                color: #0c2446;
-            }
-            QGroupBox {
-                background: #ffffff;
-                border: 1px solid #c8d6ea;
-                border-radius: 2px;
-                margin-top: 8px;
-                font-weight: 400;
-                color: #003399;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 4px;
-            }
-            QLineEdit, QComboBox, QSpinBox {
-                border: 1px solid #9cb6d8;
-                border-radius: 2px;
-                padding: 4px 6px;
-                background: #ffffff;
-                color: #000000;
-                selection-background-color: #cfe3ff;
-                selection-color: #10233f;
-            }
-            QTableWidget {
-                gridline-color: #dbe4f2;
-                border: 1px solid #9cb6d8;
-                border-radius: 2px;
-                background: #ffffff;
-                color: #000000;
-                selection-background-color: #cfe3ff;
-                selection-color: #10233f;
-            }
-            QTableWidget::item:selected {
-                color: #10233f;
-                background: #cfe3ff;
-            }
-            QHeaderView::section {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #f6f9ff, stop:1 #e3ecf9);
-                color: #003399;
-                padding: 5px;
-                border: none;
-                border-right: 1px solid #c8d6ea;
-                border-bottom: 1px solid #c8d6ea;
-                font-weight: 400;
-            }
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #e6eef9);
-                border: 1px solid #a8bcd8;
-                border-radius: 2px;
-                padding: 4px 10px;
-                color: #003399;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #d9e7fb);
-                border: 1px solid #7ea2d8;
-            }
-            QPushButton:pressed {
-                background: #d6e4f8;
-            }
-            QGroupBox#calculatorBox QPushButton[calcKey="true"] {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #eaf1fc);
-                border: 1px solid #afc1db;
-                font-weight: 400;
-            }
-            QGroupBox#calculatorBox QPushButton[calcKey="true"]:hover {
-                background: #dce8fa;
-                border: 1px solid #7ea2d8;
-            }
-            QLabel {
-                color: #000000;
-            }
-            QListWidget {
-                border: 1px solid #9cb6d8;
-                border-radius: 2px;
-                background: #ffffff;
-            }
-            QListWidget::item {
-                padding: 4px;
-            }
-            QListWidget::item:selected {
-                background: #cfe3ff;
-                color: #10233f;
-            }
-            QStatusBar {
-                background: #edf3fb;
-                border-top: 1px solid #c7d6ea;
-            }
-            QSplitter::handle {
-                background: #d2deef;
-                width: 5px;
-            }
-            """
-        )
+        """Install the brand style sheet on the whole application."""
+        self.setStyleSheet(build_stylesheet())
 
     def _build_sheets_section(self) -> QWidget:
         sheet = QWidget()
@@ -399,6 +461,7 @@ class VaticWindow(QMainWindow):
         layout.setSpacing(4)
 
         box = QGroupBox("Analysis Sheets")
+        box.setObjectName("sheetsPanel")
         box_layout = QVBoxLayout(box)
 
         self.analysis_search_input = QLineEdit()
@@ -417,7 +480,9 @@ class VaticWindow(QMainWindow):
         self.analysis_list.itemSelectionChanged.connect(self._sync_row_actions)
 
         self.analysis_meta_label = QLabel("No analysis loaded")
+        self.analysis_meta_label.setObjectName("metaLabel")
 
+        box_layout.setSpacing(8)
         box_layout.addWidget(self.analysis_search_input)
         box_layout.addWidget(self.analysis_list)
         box_layout.addWidget(self.analysis_meta_label)
@@ -430,8 +495,22 @@ class VaticWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        box = QGroupBox()
+        box = QGroupBox("Assumptions")
+        box.setObjectName("assumptionsPanel")
         box_layout = QVBoxLayout(box)
+        box_layout.setSpacing(8)
+
+        assumption_actions = QHBoxLayout()
+        assumption_actions.setSpacing(6)
+        self.add_variable_button = QPushButton("Add Variable")
+        self.add_variable_button.clicked.connect(self.add_row)
+        self.remove_variable_button = QPushButton("Remove")
+        self.remove_variable_button.setProperty("variant", "ghost")
+        self.remove_variable_button.clicked.connect(self.remove_selected_rows)
+        assumption_actions.addWidget(self.add_variable_button)
+        assumption_actions.addWidget(self.remove_variable_button)
+        assumption_actions.addStretch(1)
+        box_layout.addLayout(assumption_actions)
 
         self.assumption_table = QTableWidget(0, 3)
         self.assumption_table.setHorizontalHeaderLabels([
@@ -447,7 +526,9 @@ class VaticWindow(QMainWindow):
             self._sync_row_actions
         )
         self.assumption_table.itemChanged.connect(self._on_model_input_changed)
-        self.assumption_table.setMinimumHeight(220)
+        self.assumption_table.setMinimumHeight(120)
+        self.assumption_table.setAlternatingRowColors(True)
+        self.assumption_table.verticalHeader().setDefaultSectionSize(34)
         box_layout.addWidget(self.assumption_table)
 
         self.assumption_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -458,10 +539,24 @@ class VaticWindow(QMainWindow):
             self._handle_assumption_double_click
         )
 
-        formula_box = QWidget()
+        formula_box = QGroupBox("Forecast Formulas")
+        formula_box.setObjectName("formulasPanel")
         formula_layout = QVBoxLayout(formula_box)
-        formula_layout.setContentsMargins(0, 0, 0, 0)
-        formula_layout.setSpacing(4)
+        formula_layout.setSpacing(8)
+
+        formula_actions = QHBoxLayout()
+        formula_actions.setSpacing(6)
+        self.add_formula_button = QPushButton("Add Formula")
+        self.add_formula_button.clicked.connect(self.add_formula_via_dialog)
+        self.remove_formula_button = QPushButton("Remove")
+        self.remove_formula_button.setProperty("variant", "ghost")
+        self.remove_formula_button.clicked.connect(
+            self.remove_selected_formula_rows
+        )
+        formula_actions.addWidget(self.add_formula_button)
+        formula_actions.addWidget(self.remove_formula_button)
+        formula_actions.addStretch(1)
+        formula_layout.addLayout(formula_actions)
 
         self.formula_table = QTableWidget(0, 5)
         self.formula_table.setHorizontalHeaderLabels([
@@ -493,7 +588,13 @@ class VaticWindow(QMainWindow):
         self.formula_table.customContextMenuRequested.connect(
             self._show_formula_context_menu
         )
-        self.formula_table.setMinimumHeight(160)
+        self.formula_table.setMinimumHeight(96)
+        self.formula_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.formula_table.cellDoubleClicked.connect(
+            self._handle_formula_double_click
+        )
+        self.formula_table.setAlternatingRowColors(True)
+        self.formula_table.verticalHeader().setDefaultSectionSize(30)
         formula_layout.addWidget(self.formula_table)
 
         assumptions_splitter = QSplitter(Qt.Vertical)
@@ -502,7 +603,7 @@ class VaticWindow(QMainWindow):
         assumptions_splitter.addWidget(formula_box)
         assumptions_splitter.setStretchFactor(0, 6)
         assumptions_splitter.setStretchFactor(1, 4)
-        assumptions_splitter.setSizes([420, 260])
+        assumptions_splitter.setSizes([300, 210])
 
         layout.addWidget(assumptions_splitter)
         return sheet
@@ -513,21 +614,45 @@ class VaticWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        controls_box = QGroupBox()
-        controls_form = QFormLayout(controls_box)
+        controls_box = QGroupBox("Simulation")
+        controls_box.setObjectName("simulationPanel")
+        controls_row = QHBoxLayout(controls_box)
+        controls_row.setSpacing(10)
 
         self.iteration_spin = QSpinBox()
         self.iteration_spin.setRange(500, 200000)
         self.iteration_spin.setValue(10000)
         self.iteration_spin.setSingleStep(1000)
+        self.iteration_spin.setGroupSeparatorShown(True)
+        self.iteration_spin.setFocusPolicy(Qt.StrongFocus)
         self.iteration_spin.valueChanged.connect(self._on_model_input_changed)
 
-        controls_form.addRow("Iterations", self.iteration_spin)
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 2_147_483_647)
+        self.seed_spin.setValue(RANDOM_SEED)
+        self.seed_spin.setSpecialValueText("random")
+        self.seed_spin.setToolTip(
+            "Seed the sampler so a run can be reproduced exactly. "
+            "Leave it on 'random' for a fresh sample set each time."
+        )
+        self.seed_spin.setFocusPolicy(Qt.StrongFocus)
+        self.seed_spin.valueChanged.connect(self._on_model_input_changed)
+
+        iterations_label = QLabel("Iterations")
+        iterations_label.setObjectName("sectionTitle")
+        seed_label = QLabel("Seed")
+        seed_label.setObjectName("sectionTitle")
+        controls_row.addWidget(iterations_label)
+        controls_row.addWidget(self.iteration_spin, 1)
+        controls_row.addSpacing(10)
+        controls_row.addWidget(seed_label)
+        controls_row.addWidget(self.seed_spin, 1)
         layout.addWidget(controls_box)
 
-        calculator_box = QGroupBox()
+        calculator_box = QGroupBox("Formula Keypad")
         calculator_box.setObjectName("calculatorBox")
         calculator_grid = QGridLayout(calculator_box)
+        calculator_grid.setSpacing(5)
         button_rows: list[list[tuple[str, str]]] = [
             [
                 ("7", "7"),
@@ -582,8 +707,13 @@ class VaticWindow(QMainWindow):
         for row_idx, row_buttons in enumerate(button_rows):
             for col_idx, (label, token) in enumerate(row_buttons):
                 button = QPushButton(label)
-                button.setMinimumHeight(30)
-                button.setProperty("calcKey", True)
+                button.setMinimumHeight(28)
+                if token in {"__clear__", "__del__"}:
+                    button.setProperty("calcKey", "edit")
+                elif label.isalpha() and len(label) > 1:
+                    button.setProperty("calcKey", "fn")
+                else:
+                    button.setProperty("calcKey", "true")
                 if token == "__clear__":
                     button.clicked.connect(self._clear_formula)
                 elif token == "__del__":
@@ -600,6 +730,193 @@ class VaticWindow(QMainWindow):
 
         layout.addStretch(1)
         return sheet
+
+    def show_excel_help(self) -> None:
+        """Explain how to drive a spreadsheet model from vatic."""
+        ExcelHelpDialog(available=excel_available(), parent=self).exec()
+
+    # ------------------------------------------------------ spreadsheet
+
+    def _sync_sheet_actions(self) -> None:
+        """Enable the spreadsheet actions that make sense right now."""
+        connected = self.excel_session is not None
+        self.disconnect_workbook_action.setEnabled(connected)
+        self.tag_assumption_action.setEnabled(connected)
+        self.tag_forecast_action.setEnabled(connected)
+        self.clear_tags_action.setEnabled(
+            bool(self.sheet_model.assumptions or self.sheet_model.forecasts)
+        )
+
+    def connect_workbook(self) -> None:
+        """Attach to a workbook so the simulation runs through Excel."""
+        if not excel_available():
+            ExcelHelpDialog(available=False, parent=self).exec()
+            return
+
+        from vatic.excel import ExcelSession
+
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Connect Workbook",
+            "",
+            "Excel workbooks (*.xlsx *.xlsm *.xls);;All files (*)",
+        )
+
+        session = ExcelSession(visible=True)
+        try:
+            name = session.connect(path or None)
+        except ExcelLinkError as exc:
+            session.close()
+            QMessageBox.critical(self, "Connect Workbook", exc.user_message())
+            return
+
+        self.excel_session = session
+        self.sheet_model = SheetModel(workbook=name)
+        self._sync_sheet_actions()
+        self.statusBar().showMessage(f"Connected to {name}")
+        LOGGER.info("Spreadsheet link established | workbook=%s", name)
+        QMessageBox.information(
+            self,
+            "Connect Workbook",
+            f"Connected to '{name}'.\n\n"
+            "Now select an input cell in Excel and use "
+            "Spreadsheet > Tag Selected Cell as Assumption, then select an "
+            "output cell and tag it as a forecast. Run Simulation will drive "
+            "the workbook.",
+        )
+
+    def disconnect_workbook(self) -> None:
+        """Release the workbook and go back to the in-app formula model."""
+        if self.excel_session is None:
+            return
+        self.clear_sheet_tags()
+        self.excel_session.close()
+        self.excel_session = None
+        self.sheet_model = SheetModel()
+        self._sync_sheet_actions()
+        self.statusBar().showMessage("Disconnected from Excel")
+        LOGGER.info("Spreadsheet link released")
+
+    def _selected_cell(self) -> CellRef | None:
+        """Return the cell currently selected in Excel.
+
+        Returns:
+            The selection as a reference, or None when it cannot be read.
+        """
+        try:
+            selection = self.excel_session.app.Selection
+            sheet = str(selection.Worksheet.Name)
+            cell = str(selection.Cells(1, 1).Address).replace("$", "")
+            return CellRef(cell=cell, sheet=sheet)
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            LOGGER.warning("Could not read the Excel selection | %s", exc)
+            return None
+
+    def tag_assumption(self) -> None:
+        """Tag the cell selected in Excel as a sampled input."""
+        ref = self._selected_cell()
+        if ref is None:
+            QMessageBox.warning(
+                self, "Tag Assumption", "Select a single cell in Excel first."
+            )
+            return
+
+        suggested = self.excel_session.label_of(ref)
+        tag, accepted = QInputDialog.getText(
+            self,
+            "Tag Assumption",
+            f"Name for {ref.qualified()}:",
+            text=suggested,
+        )
+        if not accepted or not tag.strip():
+            return
+
+        spec = get_distribution_spec("Normal")
+        current = self.excel_session.read(ref)
+        nominal = float(current) if isinstance(current, (int, float)) else 0.0
+        dialog = ParameterDialog(
+            spec, {"mu": nominal, "sigma": abs(nominal) * 0.05 or 1.0}, self
+        )
+        if dialog.exec() != ParameterDialog.Accepted:
+            return
+
+        interior = self.excel_session.capture_interior(ref)
+        self.sheet_model.assumptions.append(
+            SheetAssumption(
+                ref=ref,
+                tag=tag.strip(),
+                distribution=spec.label,
+                parameters=dialog.values(),
+                original_interior=interior,
+            )
+        )
+        self.excel_session.highlight(ref, ASSUMPTION_TINT)
+        self._sync_sheet_actions()
+        self.statusBar().showMessage(
+            f"Tagged {ref.qualified()} as assumption '{tag.strip()}'"
+        )
+
+    def tag_forecast(self) -> None:
+        """Tag the cell selected in Excel as a tracked output."""
+        ref = self._selected_cell()
+        if ref is None:
+            QMessageBox.warning(
+                self, "Tag Forecast", "Select a single cell in Excel first."
+            )
+            return
+
+        suggested = self.excel_session.label_of(ref)
+        dialog = ForecastDialog(
+            name=suggested if suggested.isidentifier() else "forecast",
+            expression=ref.qualified(),
+            parent=self,
+        )
+        dialog.expression_input.setEnabled(False)
+        dialog.expression_input.setToolTip(
+            "A spreadsheet forecast is the cell itself, not an expression."
+        )
+        if dialog.exec() != ForecastDialog.Accepted:
+            return
+        values = dialog.values()
+
+        interior = self.excel_session.capture_interior(ref)
+        self.sheet_model.forecasts.append(
+            SheetForecast(
+                ref=ref,
+                tag=values["name"],
+                lsl=self._parse_optional_float(values["lsl"], "LSL", 0),
+                usl=self._parse_optional_float(values["usl"], "USL", 0),
+                target=self._parse_optional_float(
+                    values["target"], "Target", 0
+                ),
+                original_interior=interior,
+            )
+        )
+        self.excel_session.highlight(ref, FORECAST_TINT)
+        self._sync_sheet_actions()
+        self.statusBar().showMessage(
+            f"Tagged {ref.qualified()} as forecast '{values['name']}'"
+        )
+
+    def clear_sheet_tags(self) -> None:
+        """Remove every tag and put the cell colours back."""
+        if self.excel_session is not None:
+            for item in (
+                *self.sheet_model.assumptions,
+                *self.sheet_model.forecasts,
+            ):
+                if item.original_interior is not None:
+                    try:
+                        self.excel_session.restore_interior(
+                            item.ref, item.original_interior
+                        )
+                    except Exception as exc:  # noqa: BLE001 - keep going
+                        LOGGER.warning(
+                            "Could not restore %s | %s", item.ref, exc
+                        )
+        self.sheet_model.assumptions.clear()
+        self.sheet_model.forecasts.clear()
+        self._sync_sheet_actions()
 
     def show_info(self) -> None:
         dialog = QMessageBox(self)
@@ -687,41 +1004,60 @@ class VaticWindow(QMainWindow):
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(1, 1)
 
-        chart_controls = QGroupBox()
+        chart_controls = QWidget()
+        chart_controls.setObjectName("chartToolbar")
         chart_controls_layout = QHBoxLayout(chart_controls)
+        chart_controls_layout.setContentsMargins(14, 10, 14, 10)
         self.chart_type_combo = QComboBox()
         self.chart_type_combo.addItems(CHART_TYPES)
         self.chart_type_combo.currentTextChanged.connect(
             self.render_selected_chart
         )
-        self.chart_type_combo.setMaximumWidth(220)
+        self.chart_type_combo.setFocusPolicy(Qt.StrongFocus)
+        self.chart_type_combo.setMinimumWidth(170)
+        self.chart_type_combo.setMaximumWidth(240)
         self.scatter_var_combo = QComboBox()
         self.scatter_var_combo.currentTextChanged.connect(
             self.render_selected_chart
         )
-        self.scatter_var_combo.setMaximumWidth(220)
-        chart_controls_layout.addWidget(QLabel("Chart"))
+        self.scatter_var_combo.setFocusPolicy(Qt.StrongFocus)
+        self.scatter_var_combo.setMinimumWidth(170)
+        self.scatter_var_combo.setMaximumWidth(240)
+        chart_label = QLabel("CHART")
+        chart_label.setObjectName("sectionTitle")
+        series_label = QLabel("SERIES")
+        series_label.setObjectName("sectionTitle")
+        chart_controls_layout.addWidget(chart_label)
         chart_controls_layout.addWidget(self.chart_type_combo)
-        chart_controls_layout.addSpacing(8)
-        chart_controls_layout.addWidget(QLabel("Series"))
+        chart_controls_layout.addSpacing(14)
+        chart_controls_layout.addWidget(series_label)
         chart_controls_layout.addWidget(self.scatter_var_combo)
         chart_controls_layout.addStretch(1)
-        chart_controls.setMaximumHeight(74)
+        chart_controls.setMaximumHeight(58)
 
-        chart_box = QGroupBox()
+        chart_box = QWidget()
+        chart_box.setObjectName("chartFrame")
         chart_layout = QVBoxLayout(chart_box)
+        chart_layout.setContentsMargins(4, 4, 4, 4)
         self.canvas = PlotCanvas()
+        self.canvas.setMinimumHeight(200)
         chart_layout.addWidget(self.canvas)
 
-        self.stats_label = QLabel("Run a simulation to view results")
+        self.stats_label = QLabel(
+            "No results yet\n\n"
+            "Define your assumptions and forecast formulas, then run the "
+            "simulation to see\nstatistics and capability metrics here."
+        )
         self.stats_label.setObjectName("statsCard")
         self.stats_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.stats_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.stats_label.setStyleSheet(
-            "border: 1px solid #c8d6ea; background: #f8fbff; "
-            "padding: 10px; font-family: 'Consolas';"
-        )
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setMinimumHeight(96)
 
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.setRowStretch(1, 5)
+        layout.setRowStretch(2, 2)
         layout.addWidget(chart_controls, 0, 0, 1, 2)
         layout.addWidget(chart_box, 1, 0, 1, 2)
         layout.addWidget(self.stats_label, 2, 0, 1, 2)
@@ -776,6 +1112,84 @@ class VaticWindow(QMainWindow):
         )
         self.formula_table.setItem(
             row, 4, QTableWidgetItem("" if target is None else str(target))
+        )
+
+    def _handle_formula_double_click(self, row: int, _col: int) -> None:
+        """Open the formula editor for a double-clicked row.
+
+        Args:
+            row: Row that was double-clicked.
+            _col: Column that was double-clicked; every column opens the
+                same editor.
+        """
+        self.edit_formula_row(row)
+
+    def add_formula_via_dialog(self) -> None:
+        """Ask for a new forecast formula and append it when confirmed."""
+        dialog = ForecastDialog(parent=self)
+        if dialog.exec() != ForecastDialog.Accepted:
+            LOGGER.debug("Forecast dialog cancelled")
+            return
+        self._write_formula_row(self.formula_table.rowCount(), dialog.values())
+
+    def edit_formula_row(self, row: int) -> None:
+        """Edit an existing forecast formula in a dialog.
+
+        Args:
+            row: Index of the formula row to edit.
+        """
+        if not 0 <= row < self.formula_table.rowCount():
+            return
+
+        def cell(column: int) -> str:
+            item = self.formula_table.item(row, column)
+            return item.text() if item else ""
+
+        dialog = ForecastDialog(
+            name=cell(0),
+            expression=cell(1),
+            lsl=cell(2),
+            usl=cell(3),
+            target=cell(4),
+            parent=self,
+        )
+        if dialog.exec() != ForecastDialog.Accepted:
+            LOGGER.debug("Forecast edit cancelled | row=%s", row)
+            return
+        self._write_formula_row(row, dialog.values())
+
+    def edit_selected_formula(self) -> None:
+        """Edit whichever formula row is currently selected."""
+        row = self.formula_table.currentRow()
+        if row < 0:
+            QMessageBox.information(
+                self, "vatic", "Select a formula row to edit."
+            )
+            return
+        self.edit_formula_row(row)
+
+    def _write_formula_row(self, row: int, values: dict[str, str]) -> None:
+        """Write dialog values into a formula row, appending if needed.
+
+        Args:
+            row: Target row index; a row is appended when it does not exist.
+            values: Field values returned by :class:`ForecastDialog`.
+        """
+        if row >= self.formula_table.rowCount():
+            self.formula_table.insertRow(self.formula_table.rowCount())
+        for column, key in enumerate((
+            "name",
+            "expression",
+            "lsl",
+            "usl",
+            "target",
+        )):
+            self.formula_table.setItem(
+                row, column, QTableWidgetItem(values.get(key, ""))
+            )
+        self.formula_table.setCurrentCell(row, 1)
+        LOGGER.debug(
+            "Formula row written | row=%s | name=%s", row, values.get("name")
         )
 
     def remove_selected_formula_rows(self) -> None:
@@ -906,6 +1320,7 @@ class VaticWindow(QMainWindow):
             self.assumption_table.selectRow(row)
 
         menu = QMenu(self)
+        self._round_popup(menu)
         edit_action = menu.addAction("Edit Parameters")
         edit_action.setEnabled(row >= 0)
         add_action = menu.addAction("Add Assumption")
@@ -925,13 +1340,19 @@ class VaticWindow(QMainWindow):
             self.formula_table.selectRow(row)
 
         menu = QMenu(self)
-        add_action = menu.addAction("Add Formula")
+        self._round_popup(menu)
+        add_action = menu.addAction("Add Formula...")
+        edit_action = menu.addAction("Edit Formula...")
+        edit_action.setEnabled(row >= 0)
+        menu.addSeparator()
         remove_action = menu.addAction("Remove Selected")
         remove_action.setEnabled(row >= 0)
 
         chosen = menu.exec(self.formula_table.viewport().mapToGlobal(point))
         if chosen is add_action:
-            self.add_formula_row()
+            self.add_formula_via_dialog()
+        elif chosen is edit_action:
+            self.edit_formula_row(row)
         elif chosen is remove_action:
             self.remove_selected_formula_rows()
 
@@ -959,6 +1380,7 @@ class VaticWindow(QMainWindow):
         self.edit_row_action.setEnabled(has_selection)
         self.load_analysis_action.setEnabled(has_analysis_selection)
         self.remove_formula_action.setEnabled(has_formula_selection)
+        self.edit_formula_action.setEnabled(has_formula_selection)
 
     def _selected_analysis_id(self) -> int | None:
         item = self.analysis_list.currentItem()
@@ -1011,6 +1433,8 @@ class VaticWindow(QMainWindow):
         self.analysis_meta_label.setText(
             f"Active: {self.current_analysis_name}"
         )
+        if hasattr(self, "header_analysis_label"):
+            self.header_analysis_label.setText(self.current_analysis_name)
         self.statusBar().showMessage(
             f"Current analysis: {self.current_analysis_name}"
         )
@@ -1566,14 +1990,19 @@ class VaticWindow(QMainWindow):
             ) from exc
 
     def run_simulation(self) -> None:
+        if self.excel_session is not None and self.sheet_model.assumptions:
+            self.run_spreadsheet_simulation()
+            return
         try:
             assumptions = self._parse_assumptions()
             formula_text = self._serialize_formula_rows()
 
             mcerp.npts = self.iteration_spin.value()
+            active_seed = seed_sampler(self.seed_spin.value())
             LOGGER.info(
-                "Starting simulation | iterations=%s | assumptions=%s | formulas=%s",
+                "Starting simulation | iterations=%s | seed=%s | assumptions=%s | formulas=%s",
                 mcerp.npts,
+                active_seed if active_seed is not None else "random",
                 len(assumptions),
                 formula_text,
             )
@@ -1664,6 +2093,125 @@ class VaticWindow(QMainWindow):
             LOGGER.exception("Simulation failed")
             self._invalidate_simulation_results()
             QMessageBox.critical(self, "Simulation Error", str(exc))
+
+    def run_spreadsheet_simulation(self) -> None:
+        """Run the simulation through the connected Excel workbook.
+
+        The run happens on the GUI thread. A COM apartment belongs to the
+        thread that created it, and a ten thousand trial run completes in
+        about a second, so blocking briefly is preferable to marshalling the
+        session across threads.
+        """  # noqa: DOC501
+        from vatic.excel import ExcelRunner
+
+        try:
+            self.sheet_model.validate()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Run Simulation", str(exc))
+            return
+
+        trials = self.iteration_spin.value()
+        seed_sampler(self.seed_spin.value())
+
+        try:
+            columns = []
+            for assumption in self.sheet_model.assumptions:
+                spec = get_distribution_spec(assumption.distribution)
+                variable = build_variable(
+                    assumption.tag, spec, assumption.parameters
+                )
+                samples = np.asarray(variable._mcpts, dtype=float)
+                if samples.size < trials:
+                    raise ValueError(
+                        f"Sampler produced {samples.size} values for "
+                        f"'{assumption.tag}' but {trials} trials were asked "
+                        "for; raise the iteration count before running."
+                    )
+                columns.append(samples[:trials])
+            matrix = np.column_stack(columns)
+        except (ValueError, KeyError) as exc:
+            QMessageBox.critical(self, "Run Simulation", str(exc))
+            return
+
+        status = self.statusBar()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = ExcelRunner(self.excel_session, self.sheet_model).run(
+                matrix,
+                progress=lambda stage, _f: status.showMessage(
+                    f"Excel: {stage}"
+                ),
+            )
+        except ExcelLinkError as exc:
+            QMessageBox.critical(self, "Run Simulation", exc.user_message())
+            return
+        except ValueError as exc:
+            QMessageBox.critical(self, "Run Simulation", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._publish_spreadsheet_results(result)
+
+    def _publish_spreadsheet_results(self, result: object) -> None:
+        """Feed a spreadsheet run into the charts, stats and reports.
+
+        Args:
+            result: The :class:`~vatic.excel.runner.RunResult` to publish.
+        """
+        outputs: dict[str, np.ndarray] = {}
+        specs: dict[str, dict[str, float | None]] = {}
+        capability: dict[str, dict[str, float]] = {}
+
+        for forecast in self.sheet_model.forecasts:
+            column = result.forecasts[forecast.tag]
+            usable = column[~np.isnan(column)]
+            if usable.size == 0:
+                QMessageBox.critical(
+                    self,
+                    "Run Simulation",
+                    f"Every trial for '{forecast.tag}' produced a worksheet "
+                    "error, so there is nothing to summarise.",
+                )
+                return
+            outputs[forecast.tag] = usable
+            specs[forecast.tag] = {
+                "lsl": forecast.lsl,
+                "usl": forecast.usl,
+                "target": forecast.target,
+            }
+            capability[forecast.tag] = compute_capability_metrics(
+                usable,
+                lsl=forecast.lsl,
+                usl=forecast.usl,
+                target=forecast.target,
+            )
+
+        self.last_forecasts = outputs
+        self.last_forecast_order = list(outputs)
+        self.active_forecast_name = self.last_forecast_order[-1]
+        self.last_output = outputs[self.active_forecast_name]
+        self.last_forecast_specs = specs
+        self.last_capability_by_forecast = capability
+        self.last_capability = dict(
+            capability.get(self.active_forecast_name, {})
+        )
+        self.last_inputs = dict(result.inputs)
+        self.last_stats = compute_statistics(self.last_output)
+
+        self._update_statistics_label()
+        self._refresh_scatter_variable_combo()
+        self.render_selected_chart()
+
+        diagnostics = result.diagnostics
+        message = (
+            f"Excel run complete: {diagnostics.trials:,} trials in "
+            f"{diagnostics.seconds:.2f}s"
+        )
+        if diagnostics.error_count:
+            message += f" ({diagnostics.error_count} trials had cell errors)"
+        self.statusBar().showMessage(message)
+        LOGGER.info("Spreadsheet results published | %s", message)
 
     def _extract_output_values(self, outcome: object) -> np.ndarray:
         if hasattr(outcome, "_mcpts"):

@@ -64,6 +64,13 @@ classifiers = [
     "Operating System :: MacOS",
 ]
 
+[project.optional-dependencies]
+# The Microsoft Excel link is Windows-only; the rest of the app, including
+# the in-app formula model, works everywhere without it.
+excel = [
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
 [project.scripts]
 vatic = "vatic.app:main"
 
@@ -76,12 +83,24 @@ issues = "https://github.com/eggzec/vatic/issues"
 dev = [
     { include-group = "docs" },
     { include-group = "lint" },
+    { include-group = "test" },
+    { include-group = "examples" },
+    { include-group = "excel" },
 ]
 docs = [
     "zensical>=0.0.23",
 ]
 lint = [
     "ruff==0.15.*",
+]
+test = [
+    "pytest>=8.0",
+]
+examples = [
+    "openpyxl>=3.1",
+]
+excel = [
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [tool.uv]
@@ -93,6 +112,23 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 include = [
     "/vatic",
+]
+# Brand assets are not Python sources, so they must be named explicitly or the
+# installed app falls back to a generic icon and a system font.
+artifacts = [
+    "/vatic/assets/*.png",
+    "/vatic/assets/*.svg",
+    "/vatic/assets/*.ico",
+    "/vatic/assets/fonts/*.ttf",
+    "/vatic/assets/fonts/OFL.txt",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/vatic",
+    "/assets",
+    "/README.md",
+    "/LICENSE",
 ]
 
 [tool.ruff]
@@ -140,3 +176,7 @@ ignore = [
 [tool.ruff.format]
 docstring-code-format = true
 skip-magic-trailing-comma = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -64,6 +64,13 @@ classifiers = [
     "Operating System :: MacOS",
 ]
 
+[project.optional-dependencies]
+# The Microsoft Excel link is Windows-only; the rest of the app, including
+# the in-app formula model, works everywhere without it.
+excel = [
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
 [project.scripts]
 vatic = "vatic.app:main"
 
@@ -78,6 +85,7 @@ dev = [
     { include-group = "lint" },
     { include-group = "test" },
     { include-group = "examples" },
+    { include-group = "excel" },
 ]
 docs = [
     "zensical>=0.0.23",
@@ -90,6 +98,9 @@ test = [
 ]
 examples = [
     "openpyxl>=3.1",
+]
+excel = [
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [tool.uv]

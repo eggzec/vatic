@@ -69,7 +69,7 @@ from vatic.analytics import (
 )
 from vatic.assumption import Assumption
 from vatic.chart import PlotCanvas
-from vatic.dialogs import ForecastDialog, ParameterDialog
+from vatic.dialogs import ExcelHelpDialog, ForecastDialog, ParameterDialog
 from vatic.distributions import (
     RANDOM_SEED,
     build_variable,
@@ -78,11 +78,14 @@ from vatic.distributions import (
     get_distribution_spec,
     seed_sampler,
 )
+from vatic.excel import ExcelLinkError, excel_available
+from vatic.excel.runner import ASSUMPTION_TINT, FORECAST_TINT
 from vatic.formula import evaluate_formula
 from vatic.logger import get_logger
 from vatic.reporting import export_pdf_report as write_pdf_report
 from vatic.reporting import export_pptx_report as write_pptx_report
 from vatic.resources import app_icon, load_bundled_fonts, rounded_logo_pixmap
+from vatic.sheetmodel import CellRef, SheetAssumption, SheetForecast, SheetModel
 from vatic.storage import AnalysisStore
 from vatic.theme import build_stylesheet
 
@@ -153,6 +156,11 @@ class VaticWindow(QMainWindow):
             tuple[QThread, _ReportExportWorker]
         ] = []
         self._export_jobs: dict[int, tuple[QThread, str, str, str]] = {}
+
+        # Spreadsheet link. None until a workbook is connected, at which
+        # point Run Simulation drives Excel instead of the in-app model.
+        self.excel_session: object | None = None
+        self.sheet_model = SheetModel()
 
         load_bundled_fonts()
         # Rounded popups need a translucent window or the square native
@@ -402,7 +410,41 @@ class VaticWindow(QMainWindow):
         run_action.triggered.connect(self.run_simulation)
         view_menu.addAction(run_action)
 
+        sheet_menu = menu.addMenu("&Spreadsheet")
+        self.connect_workbook_action = QAction("Connect Workbook...", self)
+        self.connect_workbook_action.triggered.connect(self.connect_workbook)
+        sheet_menu.addAction(self.connect_workbook_action)
+
+        self.disconnect_workbook_action = QAction("Disconnect", self)
+        self.disconnect_workbook_action.setEnabled(False)
+        self.disconnect_workbook_action.triggered.connect(
+            self.disconnect_workbook
+        )
+        sheet_menu.addAction(self.disconnect_workbook_action)
+
+        sheet_menu.addSeparator()
+        self.tag_assumption_action = QAction(
+            "Tag Selected Cell as Assumption...", self
+        )
+        self.tag_assumption_action.setEnabled(False)
+        self.tag_assumption_action.triggered.connect(self.tag_assumption)
+        sheet_menu.addAction(self.tag_assumption_action)
+
+        self.tag_forecast_action = QAction(
+            "Tag Selected Cell as Forecast...", self
+        )
+        self.tag_forecast_action.setEnabled(False)
+        self.tag_forecast_action.triggered.connect(self.tag_forecast)
+        sheet_menu.addAction(self.tag_forecast_action)
+
+        self.clear_tags_action = QAction("Clear Tagged Cells", self)
+        self.clear_tags_action.setEnabled(False)
+        self.clear_tags_action.triggered.connect(self.clear_sheet_tags)
+        sheet_menu.addAction(self.clear_tags_action)
+
         help_menu = menu.addMenu("&Help")
+        help_menu.addAction("Using vatic with Excel...", self.show_excel_help)
+        help_menu.addSeparator()
         help_menu.addAction("Info", self.show_info)
 
         for submenu in menu.findChildren(QMenu):
@@ -486,7 +528,7 @@ class VaticWindow(QMainWindow):
         self.assumption_table.itemChanged.connect(self._on_model_input_changed)
         self.assumption_table.setMinimumHeight(120)
         self.assumption_table.setAlternatingRowColors(True)
-        self.assumption_table.verticalHeader().setDefaultSectionSize(32)
+        self.assumption_table.verticalHeader().setDefaultSectionSize(34)
         box_layout.addWidget(self.assumption_table)
 
         self.assumption_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -688,6 +730,193 @@ class VaticWindow(QMainWindow):
 
         layout.addStretch(1)
         return sheet
+
+    def show_excel_help(self) -> None:
+        """Explain how to drive a spreadsheet model from vatic."""
+        ExcelHelpDialog(available=excel_available(), parent=self).exec()
+
+    # ------------------------------------------------------ spreadsheet
+
+    def _sync_sheet_actions(self) -> None:
+        """Enable the spreadsheet actions that make sense right now."""
+        connected = self.excel_session is not None
+        self.disconnect_workbook_action.setEnabled(connected)
+        self.tag_assumption_action.setEnabled(connected)
+        self.tag_forecast_action.setEnabled(connected)
+        self.clear_tags_action.setEnabled(
+            bool(self.sheet_model.assumptions or self.sheet_model.forecasts)
+        )
+
+    def connect_workbook(self) -> None:
+        """Attach to a workbook so the simulation runs through Excel."""
+        if not excel_available():
+            ExcelHelpDialog(available=False, parent=self).exec()
+            return
+
+        from vatic.excel import ExcelSession
+
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Connect Workbook",
+            "",
+            "Excel workbooks (*.xlsx *.xlsm *.xls);;All files (*)",
+        )
+
+        session = ExcelSession(visible=True)
+        try:
+            name = session.connect(path or None)
+        except ExcelLinkError as exc:
+            session.close()
+            QMessageBox.critical(self, "Connect Workbook", exc.user_message())
+            return
+
+        self.excel_session = session
+        self.sheet_model = SheetModel(workbook=name)
+        self._sync_sheet_actions()
+        self.statusBar().showMessage(f"Connected to {name}")
+        LOGGER.info("Spreadsheet link established | workbook=%s", name)
+        QMessageBox.information(
+            self,
+            "Connect Workbook",
+            f"Connected to '{name}'.\n\n"
+            "Now select an input cell in Excel and use "
+            "Spreadsheet > Tag Selected Cell as Assumption, then select an "
+            "output cell and tag it as a forecast. Run Simulation will drive "
+            "the workbook.",
+        )
+
+    def disconnect_workbook(self) -> None:
+        """Release the workbook and go back to the in-app formula model."""
+        if self.excel_session is None:
+            return
+        self.clear_sheet_tags()
+        self.excel_session.close()
+        self.excel_session = None
+        self.sheet_model = SheetModel()
+        self._sync_sheet_actions()
+        self.statusBar().showMessage("Disconnected from Excel")
+        LOGGER.info("Spreadsheet link released")
+
+    def _selected_cell(self) -> CellRef | None:
+        """Return the cell currently selected in Excel.
+
+        Returns:
+            The selection as a reference, or None when it cannot be read.
+        """
+        try:
+            selection = self.excel_session.app.Selection
+            sheet = str(selection.Worksheet.Name)
+            cell = str(selection.Cells(1, 1).Address).replace("$", "")
+            return CellRef(cell=cell, sheet=sheet)
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            LOGGER.warning("Could not read the Excel selection | %s", exc)
+            return None
+
+    def tag_assumption(self) -> None:
+        """Tag the cell selected in Excel as a sampled input."""
+        ref = self._selected_cell()
+        if ref is None:
+            QMessageBox.warning(
+                self, "Tag Assumption", "Select a single cell in Excel first."
+            )
+            return
+
+        suggested = self.excel_session.label_of(ref)
+        tag, accepted = QInputDialog.getText(
+            self,
+            "Tag Assumption",
+            f"Name for {ref.qualified()}:",
+            text=suggested,
+        )
+        if not accepted or not tag.strip():
+            return
+
+        spec = get_distribution_spec("Normal")
+        current = self.excel_session.read(ref)
+        nominal = float(current) if isinstance(current, (int, float)) else 0.0
+        dialog = ParameterDialog(
+            spec, {"mu": nominal, "sigma": abs(nominal) * 0.05 or 1.0}, self
+        )
+        if dialog.exec() != ParameterDialog.Accepted:
+            return
+
+        interior = self.excel_session.capture_interior(ref)
+        self.sheet_model.assumptions.append(
+            SheetAssumption(
+                ref=ref,
+                tag=tag.strip(),
+                distribution=spec.label,
+                parameters=dialog.values(),
+                original_interior=interior,
+            )
+        )
+        self.excel_session.highlight(ref, ASSUMPTION_TINT)
+        self._sync_sheet_actions()
+        self.statusBar().showMessage(
+            f"Tagged {ref.qualified()} as assumption '{tag.strip()}'"
+        )
+
+    def tag_forecast(self) -> None:
+        """Tag the cell selected in Excel as a tracked output."""
+        ref = self._selected_cell()
+        if ref is None:
+            QMessageBox.warning(
+                self, "Tag Forecast", "Select a single cell in Excel first."
+            )
+            return
+
+        suggested = self.excel_session.label_of(ref)
+        dialog = ForecastDialog(
+            name=suggested if suggested.isidentifier() else "forecast",
+            expression=ref.qualified(),
+            parent=self,
+        )
+        dialog.expression_input.setEnabled(False)
+        dialog.expression_input.setToolTip(
+            "A spreadsheet forecast is the cell itself, not an expression."
+        )
+        if dialog.exec() != ForecastDialog.Accepted:
+            return
+        values = dialog.values()
+
+        interior = self.excel_session.capture_interior(ref)
+        self.sheet_model.forecasts.append(
+            SheetForecast(
+                ref=ref,
+                tag=values["name"],
+                lsl=self._parse_optional_float(values["lsl"], "LSL", 0),
+                usl=self._parse_optional_float(values["usl"], "USL", 0),
+                target=self._parse_optional_float(
+                    values["target"], "Target", 0
+                ),
+                original_interior=interior,
+            )
+        )
+        self.excel_session.highlight(ref, FORECAST_TINT)
+        self._sync_sheet_actions()
+        self.statusBar().showMessage(
+            f"Tagged {ref.qualified()} as forecast '{values['name']}'"
+        )
+
+    def clear_sheet_tags(self) -> None:
+        """Remove every tag and put the cell colours back."""
+        if self.excel_session is not None:
+            for item in (
+                *self.sheet_model.assumptions,
+                *self.sheet_model.forecasts,
+            ):
+                if item.original_interior is not None:
+                    try:
+                        self.excel_session.restore_interior(
+                            item.ref, item.original_interior
+                        )
+                    except Exception as exc:  # noqa: BLE001 - keep going
+                        LOGGER.warning(
+                            "Could not restore %s | %s", item.ref, exc
+                        )
+        self.sheet_model.assumptions.clear()
+        self.sheet_model.forecasts.clear()
+        self._sync_sheet_actions()
 
     def show_info(self) -> None:
         dialog = QMessageBox(self)
@@ -1761,6 +1990,9 @@ class VaticWindow(QMainWindow):
             ) from exc
 
     def run_simulation(self) -> None:
+        if self.excel_session is not None and self.sheet_model.assumptions:
+            self.run_spreadsheet_simulation()
+            return
         try:
             assumptions = self._parse_assumptions()
             formula_text = self._serialize_formula_rows()
@@ -1861,6 +2093,125 @@ class VaticWindow(QMainWindow):
             LOGGER.exception("Simulation failed")
             self._invalidate_simulation_results()
             QMessageBox.critical(self, "Simulation Error", str(exc))
+
+    def run_spreadsheet_simulation(self) -> None:
+        """Run the simulation through the connected Excel workbook.
+
+        The run happens on the GUI thread. A COM apartment belongs to the
+        thread that created it, and a ten thousand trial run completes in
+        about a second, so blocking briefly is preferable to marshalling the
+        session across threads.
+        """  # noqa: DOC501
+        from vatic.excel import ExcelRunner
+
+        try:
+            self.sheet_model.validate()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Run Simulation", str(exc))
+            return
+
+        trials = self.iteration_spin.value()
+        seed_sampler(self.seed_spin.value())
+
+        try:
+            columns = []
+            for assumption in self.sheet_model.assumptions:
+                spec = get_distribution_spec(assumption.distribution)
+                variable = build_variable(
+                    assumption.tag, spec, assumption.parameters
+                )
+                samples = np.asarray(variable._mcpts, dtype=float)
+                if samples.size < trials:
+                    raise ValueError(
+                        f"Sampler produced {samples.size} values for "
+                        f"'{assumption.tag}' but {trials} trials were asked "
+                        "for; raise the iteration count before running."
+                    )
+                columns.append(samples[:trials])
+            matrix = np.column_stack(columns)
+        except (ValueError, KeyError) as exc:
+            QMessageBox.critical(self, "Run Simulation", str(exc))
+            return
+
+        status = self.statusBar()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = ExcelRunner(self.excel_session, self.sheet_model).run(
+                matrix,
+                progress=lambda stage, _f: status.showMessage(
+                    f"Excel: {stage}"
+                ),
+            )
+        except ExcelLinkError as exc:
+            QMessageBox.critical(self, "Run Simulation", exc.user_message())
+            return
+        except ValueError as exc:
+            QMessageBox.critical(self, "Run Simulation", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._publish_spreadsheet_results(result)
+
+    def _publish_spreadsheet_results(self, result: object) -> None:
+        """Feed a spreadsheet run into the charts, stats and reports.
+
+        Args:
+            result: The :class:`~vatic.excel.runner.RunResult` to publish.
+        """
+        outputs: dict[str, np.ndarray] = {}
+        specs: dict[str, dict[str, float | None]] = {}
+        capability: dict[str, dict[str, float]] = {}
+
+        for forecast in self.sheet_model.forecasts:
+            column = result.forecasts[forecast.tag]
+            usable = column[~np.isnan(column)]
+            if usable.size == 0:
+                QMessageBox.critical(
+                    self,
+                    "Run Simulation",
+                    f"Every trial for '{forecast.tag}' produced a worksheet "
+                    "error, so there is nothing to summarise.",
+                )
+                return
+            outputs[forecast.tag] = usable
+            specs[forecast.tag] = {
+                "lsl": forecast.lsl,
+                "usl": forecast.usl,
+                "target": forecast.target,
+            }
+            capability[forecast.tag] = compute_capability_metrics(
+                usable,
+                lsl=forecast.lsl,
+                usl=forecast.usl,
+                target=forecast.target,
+            )
+
+        self.last_forecasts = outputs
+        self.last_forecast_order = list(outputs)
+        self.active_forecast_name = self.last_forecast_order[-1]
+        self.last_output = outputs[self.active_forecast_name]
+        self.last_forecast_specs = specs
+        self.last_capability_by_forecast = capability
+        self.last_capability = dict(
+            capability.get(self.active_forecast_name, {})
+        )
+        self.last_inputs = dict(result.inputs)
+        self.last_stats = compute_statistics(self.last_output)
+
+        self._update_statistics_label()
+        self._refresh_scatter_variable_combo()
+        self.render_selected_chart()
+
+        diagnostics = result.diagnostics
+        message = (
+            f"Excel run complete: {diagnostics.trials:,} trials in "
+            f"{diagnostics.seconds:.2f}s"
+        )
+        if diagnostics.error_count:
+            message += f" ({diagnostics.error_count} trials had cell errors)"
+        self.statusBar().showMessage(message)
+        LOGGER.info("Spreadsheet results published | %s", message)
 
     def _extract_output_values(self, outcome: object) -> np.ndarray:
         if hasattr(outcome, "_mcpts"):

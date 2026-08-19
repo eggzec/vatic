@@ -39,6 +39,23 @@ BRAND_HUE_ANGLES = (240.0, 260.0, 279.0, 202.0)
 HUE_TOLERANCE = 10.0
 
 
+def _channel_spread(colour: str) -> int:
+    """Return how far apart a colour's channels are.
+
+    A near-white such as ``#FAFBFD`` reports a high HLS saturation despite
+    being visually neutral, so neutrality is judged on the raw spread.
+
+    Args:
+        colour: Hex colour string.
+
+    Returns:
+        The difference between the largest and smallest channel, 0..255.
+    """
+    raw = colour.lstrip("#")
+    channels = [int(raw[i : i + 2], 16) for i in (0, 2, 4)]
+    return max(channels) - min(channels)
+
+
 def _hue_and_saturation(colour: str) -> tuple[float, float]:
     """Return the hue angle and saturation of a hex colour.
 
@@ -54,15 +71,60 @@ def _hue_and_saturation(colour: str) -> tuple[float, float]:
     return hue * 360.0, saturation
 
 
-@pytest.mark.parametrize("name", sorted(TOKENS))
-def test_every_token_stays_inside_the_logo_palette(name: str) -> None:
-    """No token may introduce a hue that is not in the logo."""
+#: Tokens that carry brand identity and must therefore sit on a logo hue.
+BRAND_TOKENS = (
+    "accent",
+    "accent.violet",
+    "accent.magenta",
+    "accent.cyan",
+    "border.focus",
+    "ink.brand",
+    "selection.bg",
+    "wash.cyan",
+    "wash.blue",
+    "wash.violet",
+    "wash.magenta",
+)
+
+
+@pytest.mark.parametrize("name", BRAND_TOKENS)
+def test_brand_tokens_sit_on_a_logo_hue(name: str) -> None:
+    """Anything that carries identity uses a colour from the logo."""
     hue, saturation = _hue_and_saturation(TOKENS[name])
-    if saturation < 0.02:
-        return  # white or a neutral, which is allowed
+    assert saturation > 0.05, f"{name} is not a colour at all"
     assert any(
         abs(hue - angle) < HUE_TOLERANCE for angle in BRAND_HUE_ANGLES
-    ), f"{name}={TOKENS[name]} has hue {hue:.0f}, outside the brand palette"
+    ), f"{name}={TOKENS[name]} has hue {hue:.0f}, outside the logo palette"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ink.strong",
+        "ink.body",
+        "ink.muted",
+        "ink.placeholder",
+        "surface.sunken",
+        "surface.stripe",
+        "border.hairline",
+        "border.subtle",
+    ],
+)
+def test_text_and_surfaces_are_neutral(name: str) -> None:
+    """Ink and paper stay neutral so text is easy to read.
+
+    Saturated blue body text passes the contrast threshold but is tiring
+    over a long session and competes with the accents, so the ink scale is
+    a cool near-black rather than the brand blue.
+    """
+    assert _channel_spread(TOKENS[name]) <= 40, (
+        f"{name}={TOKENS[name]} is too colourful for text or paper"
+    )
+
+
+def test_body_ink_is_high_contrast() -> None:
+    """Body text is comfortably past the AA threshold, not just over it."""
+    assert contrast(TOKENS["ink.body"], TOKENS["surface.panel"]) > 12.0
 
 
 def test_background_is_white() -> None:
@@ -81,18 +143,19 @@ def test_every_audited_pairing_meets_wcag_aa() -> None:
     assert not failures, f"contrast failures: {failures}"
 
 
-def test_accent_is_the_lightest_logo_hue() -> None:
-    """The primary action uses the lightest colour from the icon."""
-    from vatic.theme import _luminance
-
-    lightest = max(BRAND_HUES, key=_luminance)
-    assert TOKENS["accent"] == lightest
+def test_accent_is_a_logo_hue() -> None:
+    """The primary action is painted in a colour from the icon."""
+    assert TOKENS["accent"] in BRAND_HUES
 
 
-def test_text_on_the_accent_is_legible() -> None:
-    """The accent is too light for white text, so ink must be dark."""
+def test_accent_works_as_a_fill_and_as_text() -> None:
+    """The accent is legible under white text and as text on white.
+
+    Only the brand blue satisfies both: cyan is 2.45:1 on white and cannot
+    carry a white label, and magenta clears neither threshold for body text.
+    """
     assert contrast(TOKENS["ink.onAccent"], TOKENS["accent"]) >= 4.5
-    assert contrast("#FFFFFF", TOKENS["accent"]) < 4.5
+    assert contrast(TOKENS["accent"], TOKENS["surface.panel"]) >= 4.5
 
 
 def test_panel_washes_are_light() -> None:

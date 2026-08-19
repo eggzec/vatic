@@ -149,50 +149,51 @@ def contrast(foreground: str, background: str) -> float:
 
 #: Semantic design tokens. Each value is white, one of the four brand hues, or
 #: a tint or shade of one of them, so the closed palette holds everywhere.
+NEUTRAL = "#1F242C"  # cool near-black, the ink the interface reads on
+
 TOKENS: dict[str, str] = {
-    # Surfaces. White dominates. The recessed washes are tints of CYAN, the
-    # lightest hue in the logo, which keeps the whole interface airy.
+    # Surfaces. White dominates, with cool neutral greys for recessed areas.
     "surface.canvas": WHITE,
     "surface.panel": WHITE,
-    "surface.sunken": tint(CYAN, 0.06),
-    "surface.stripe": tint(CYAN, 0.04),
-    "surface.hover": tint(CYAN, 0.14),
-    "surface.pressed": tint(CYAN, 0.26),
-    "surface.header": tint(CYAN, 0.05),
-    # Ink. Deliberately the bright brand blue rather than a near-black navy,
-    # so the interface reads light. Every step still clears WCAG AA on white.
-    "ink.strong": shade(BLUE, 0.80),
-    "ink.body": BLUE,
-    "ink.muted": tint(BLUE, 0.834),
-    "ink.placeholder": tint(BLUE, 0.834),
-    # Cyan is only 2.45:1 on white, so anything sitting ON it needs deep ink.
-    "ink.onAccent": shade(BLUE, 0.55),
+    "surface.sunken": "#F5F7FA",
+    "surface.stripe": "#FAFBFD",
+    "surface.hover": "#EEF2F8",
+    "surface.pressed": "#E1E7F0",
+    "surface.header": "#F7F9FC",
+    # Ink. Neutral, not brand blue. Saturated blue text clears the contrast
+    # threshold on paper but is tiring to read for long stretches and blurs
+    # against the accents, so text is near-black and the brand hues are kept
+    # for the things that are actually interactive.
+    "ink.strong": "#12161C",
+    "ink.body": NEUTRAL,
+    "ink.muted": "#5A6472",
+    "ink.placeholder": "#667085",
+    "ink.onAccent": WHITE,
     "ink.brand": BLUE,
-    # Lines. Hairlines are decorative and may sit under 3:1, but a boundary
-    # that carries meaning has to clear it, and no tint of cyan ever can.
-    "border.hairline": tint(CYAN, 0.26),
-    "border.subtle": tint(CYAN, 0.42),
-    "border.strong": tint(BLUE, 0.42),
-    "border.input": tint(BLUE, 0.55),
+    # Lines.
+    "border.hairline": "#E6EAF1",
+    "border.subtle": "#D6DDE7",
+    "border.strong": "#B9C2D0",
+    "border.input": "#8B94A5",
     "border.focus": BLUE,
-    # Interaction. The primary action uses the lightest logo hue.
-    "accent": CYAN,
-    "accent.hover": shade(CYAN, 0.90),
-    "accent.pressed": shade(CYAN, 0.78),
-    "accent.wash": tint(CYAN, 0.16),
+    # Interaction. The brand blue now carries every interactive affordance,
+    # which is what makes it read as an accent rather than as body text.
+    "accent": BLUE,
+    "accent.hover": shade(BLUE, 0.86),
+    "accent.pressed": shade(BLUE, 0.72),
+    "accent.wash": tint(BLUE, 0.08),
     "accent.violet": VIOLET,
     "accent.magenta": MAGENTA,
     "accent.cyan": CYAN,
-    "selection.bg": CYAN,
-    "selection.fg": shade(BLUE, 0.55),
-    "selection.soft": tint(CYAN, 0.30),
-    # Four light washes, one per logo hue. They differentiate the panels at a
-    # glance while staying inside the closed palette, and each is pale enough
-    # that ink.body still clears WCAG AA on top of it.
-    "wash.cyan": tint(CYAN, 0.13),
-    "wash.blue": tint(BLUE, 0.09),
-    "wash.violet": tint(VIOLET, 0.11),
-    "wash.magenta": tint(MAGENTA, 0.11),
+    "selection.bg": BLUE,
+    "selection.fg": WHITE,
+    "selection.soft": tint(BLUE, 0.12),
+    # Panel washes, one per logo hue, kept pale so near-black ink stays
+    # comfortably legible on top of them.
+    "wash.cyan": tint(CYAN, 0.10),
+    "wash.blue": tint(BLUE, 0.07),
+    "wash.violet": tint(VIOLET, 0.08),
+    "wash.magenta": tint(MAGENTA, 0.08),
 }
 
 #: Ordered categorical ramp for charts. Lightness is deliberately staggered so
@@ -341,7 +342,7 @@ QLabel#sectionTitle {{
     font-weight: 700;
 }}
 QLabel#analysisName {{
-    color: {ink_brand};
+    color: {ink_strong};
     font-size: 11pt;
     font-weight: 700;
 }}
@@ -409,16 +410,18 @@ QComboBox QAbstractItemView::item {{
     min-height: 20px;
 }}
 
-/* Editors embedded in table cells must fit the row, so they drop the
-   standalone control's generous padding and minimum height. */
+/* Editors embedded in table cells drop the standalone control's generous
+   padding, but they still need enough height for a full line of text: too
+   little and the glyphs are clipped through the middle. */
 QTableWidget QComboBox, QTableView QComboBox,
 QTableWidget QLineEdit, QTableView QLineEdit,
 QTableWidget QSpinBox, QTableView QSpinBox {{
-    min-height: 0;
-    padding: 2px 8px;
+    min-height: 22px;
+    padding: 0 8px;
     border-radius: 6px;
     border: 1px solid {border_hairline};
     background: {surface_panel};
+    color: {ink_body};
 }}
 QTableWidget QComboBox {{ padding-right: 26px; }}
 QTableWidget QComboBox:hover, QTableView QComboBox:hover {{
@@ -490,7 +493,7 @@ QPushButton {{
     border: 1px solid {border_input};
     border-radius: 9px;
     padding: 8px 16px;
-    color: {ink_brand};
+    color: {ink_body};
     font-weight: 600;
     min-height: 18px;
 }}
@@ -533,9 +536,9 @@ QPushButton[variant="ghost"]:hover {{
 
 QPushButton[calcKey="true"] {{
     background: {surface_sunken};
-    border: 1px solid {border_hairline};
+    border: 1px solid {border_subtle};
     border-radius: 8px;
-    color: {ink_brand};
+    color: {ink_body};
     font-family: {mono};
     font-size: 9pt;
     font-weight: 600;

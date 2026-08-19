@@ -133,6 +133,7 @@ ERROR_VALUES: dict[int, str] = {
 #: HRESULTs worth naming when they come back from Excel.
 _HRESULTS: dict[int, type[ExcelLinkError]] = {
     -2147221164: ExcelNotAvailableError,  # REGDB_E_CLASSNOTREG
+    -2147221005: ExcelNotAvailableError,  # CO_E_CLASSSTRING
     -2147221021: ExcelNotAvailableError,  # MK_E_UNAVAILABLE
     -2147418111: ExcelBusyError,  # RPC_E_CALL_REJECTED
     -2147417846: ExcelBusyError,  # RPC_E_SERVERCALL_RETRYLATER

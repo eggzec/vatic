@@ -189,3 +189,33 @@ def test_stylesheet_icon_assets_exist() -> None:
     sheet = build_stylesheet()
     for path in re.findall(r"url\(([^)]+)\)", sheet):
         assert Path(path).exists(), path
+
+
+def test_no_rule_paints_light_text_on_a_light_background() -> None:
+    """No style sheet rule may set an unreadable colour pair.
+
+    The token audit only covers pairs the palette declares. This walks the
+    generated style sheet itself and checks every rule that sets both a
+    colour and a background, which is how a white-on-near-white disabled
+    button slipped through.
+    """
+    sheet = build_stylesheet()
+    failures = []
+    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", sheet):
+        foreground = re.search(
+            r"(?<!-)\bcolor\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        background = re.search(
+            r"\bbackground(?:-color)?\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        if not foreground or not background:
+            continue
+        ratio = contrast(foreground.group(1), background.group(1))
+        if ratio < 3.0:
+            failures.append((
+                selector.strip(),
+                foreground.group(1),
+                background.group(1),
+                round(ratio, 2),
+            ))
+    assert not failures, f"unreadable style sheet rules: {failures}"

@@ -74,19 +74,35 @@ class ApplicationState:
 
 
 def excel_available() -> bool:
-    """Whether an Excel link could be attempted on this machine.
+    """Whether Excel can actually be driven on this machine.
+
+    The registry lookup proves Excel is installed without launching it, which
+    is what separates a machine that merely has pywin32 from one that has
+    Excel. A Windows CI runner is exactly the former, and without this check
+    the spreadsheet tests would try to start an Excel that is not there.
 
     Returns:
-        True on Windows with pywin32 importable. It does not prove Excel is
-        installed; that only surfaces on connect.
+        True when Windows, pywin32 and a registered Excel are all present.
     """
     if sys.platform != "win32":
         return False
+
     try:
         import win32com.client  # noqa: F401
     except ImportError:
+        LOGGER.debug("pywin32 is not installed; no spreadsheet link")
         return False
-    return True
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CLASSES_ROOT, r"Excel.Application\CLSID"
+        ):
+            return True
+    except OSError as exc:
+        LOGGER.debug("Excel is not registered on this machine | %s", exc)
+        return False
 
 
 class ExcelSession:

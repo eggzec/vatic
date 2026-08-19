@@ -518,9 +518,9 @@ QPushButton[variant="primary"]:hover {{
 }}
 QPushButton[variant="primary"]:pressed {{ background: {accent_pressed}; }}
 QPushButton[variant="primary"]:disabled {{
-    background: {border_subtle};
+    background: {surface_sunken};
     border-color: {border_subtle};
-    color: {surface_panel};
+    color: {ink_muted};
 }}
 
 QPushButton[variant="ghost"] {{

@@ -63,10 +63,10 @@ def _base_layout(title: str) -> go.Layout:
     return go.Layout(
         title=title,
         template="plotly_white",
-        paper_bgcolor="#ffffff",
-        plot_bgcolor="#f8fbff",
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
         margin=dict(l=70, r=50, t=70, b=60),
-        font=dict(family="Segoe UI, sans-serif", size=12, color="#10233f"),
+        font=dict(family="Segoe UI, sans-serif", size=12, color="#13138C"),
     )
 
 
@@ -77,7 +77,7 @@ def _fig_histogram(output: np.ndarray) -> go.Figure:
         go.Histogram(
             x=output,
             nbinsx=bins,
-            marker=dict(color="#2A9D8F", line=dict(color="#264653", width=1)),
+            marker=dict(color="#2323FF", line=dict(color="#0F0F6B", width=1)),
             opacity=0.9,
         )
     )
@@ -97,7 +97,7 @@ def _fig_cdf(output: np.ndarray) -> go.Figure:
             x=sorted_values,
             y=cumulative,
             mode="lines",
-            line=dict(color="#1D3557", width=2),
+            line=dict(color="#2323FF", width=2),
         )
     )
     fig.update_xaxes(title_text="Outcome")
@@ -116,7 +116,7 @@ def _fig_exceedance(output: np.ndarray) -> go.Figure:
             x=sorted_values,
             y=exceedance,
             mode="lines",
-            line=dict(color="#E76F51", width=2),
+            line=dict(color="#C04AFF", width=2),
         )
     )
     fig.update_xaxes(title_text="Threshold")
@@ -157,7 +157,7 @@ def _fig_tornado(
 
     names = [name for name, _ in points]
     values = [value for _, value in points]
-    colorscale = ["#E76F51" if value < 0 else "#2A9D8F" for value in values]
+    colorscale = ["#C04AFF" if value < 0 else "#2323FF" for value in values]
     fig.add_trace(
         go.Bar(
             x=values, y=names, orientation="h", marker=dict(color=colorscale)
@@ -188,7 +188,7 @@ def _fig_var_cvar(output: np.ndarray, confidence: float = 0.95) -> go.Figure:
         go.Histogram(
             x=output,
             nbinsx=bins,
-            marker=dict(color="#8ECAE6", line=dict(color="#1D3557", width=1)),
+            marker=dict(color="#9C9CFF", line=dict(color="#2323FF", width=1)),
             opacity=0.85,
         )
     )
@@ -197,7 +197,7 @@ def _fig_var_cvar(output: np.ndarray, confidence: float = 0.95) -> go.Figure:
             x=[var_threshold, var_threshold],
             y=[0.0, y_max],
             mode="lines",
-            line=dict(color="#E76F51", width=2, dash="dash"),
+            line=dict(color="#C04AFF", width=2, dash="dash"),
             name=f"VaR {confidence:.0%}",
             hovertemplate=f"VaR {confidence:.0%}: {var_threshold:,.4f}<extra></extra>",
         )
@@ -207,7 +207,7 @@ def _fig_var_cvar(output: np.ndarray, confidence: float = 0.95) -> go.Figure:
             x=[cvar_value, cvar_value],
             y=[0.0, y_max],
             mode="lines",
-            line=dict(color="#D00000", width=2, dash="dot"),
+            line=dict(color="#772E9E", width=2, dash="dot"),
             name="CVaR",
             hovertemplate=f"CVaR: {cvar_value:,.4f}<extra></extra>",
         )
@@ -221,7 +221,7 @@ def _fig_var_cvar(output: np.ndarray, confidence: float = 0.95) -> go.Figure:
         xanchor="left",
         showarrow=False,
         text=f"VaR {confidence:.0%}: {var_threshold:,.4f}",
-        font=dict(color="#9C2D1D", size=12),
+        font=dict(color="#7E3DFF", size=12),
         bgcolor="rgba(255,255,255,0.85)",
     )
     fig.add_annotation(
@@ -232,7 +232,7 @@ def _fig_var_cvar(output: np.ndarray, confidence: float = 0.95) -> go.Figure:
         xanchor="right",
         showarrow=False,
         text=f"CVaR: {cvar_value:,.4f}",
-        font=dict(color="#7A0000", size=12),
+        font=dict(color="#45228C", size=12),
         bgcolor="rgba(255,255,255,0.85)",
     )
     fig.update_xaxes(title_text="Outcome")
@@ -263,9 +263,9 @@ def _fig_kde(output: np.ndarray) -> go.Figure:
             x=x_grid,
             y=y_density,
             mode="lines",
-            line=dict(color="#2A9D8F", width=2.5),
+            line=dict(color="#2323FF", width=2.5),
             fill="tozeroy",
-            fillcolor="rgba(42,157,143,0.22)",
+            fillcolor="rgba(35,35,255,0.18)",
         )
     )
     fig.update_xaxes(title_text="Outcome")
@@ -297,7 +297,7 @@ def _fig_qq_normal(output: np.ndarray) -> go.Figure:
             x=theoretical,
             y=observed,
             mode="markers",
-            marker=dict(size=6, color="#3A7CA5", opacity=0.6),
+            marker=dict(size=6, color="#24AEFF", opacity=0.6),
             name="Sample quantiles",
         )
     )
@@ -306,7 +306,7 @@ def _fig_qq_normal(output: np.ndarray) -> go.Figure:
             x=theoretical,
             y=fit_line,
             mode="lines",
-            line=dict(color="#E76F51", width=2),
+            line=dict(color="#C04AFF", width=2),
             name=f"Reference line (r={corr:.4f})",
         )
     )
@@ -326,7 +326,7 @@ def _fig_pareto(output: np.ndarray) -> go.Figure:
     fig = go.Figure(layout=_base_layout("Pareto (Binned Outcomes)"))
     fig.add_trace(
         go.Bar(
-            x=labels, y=counts, marker=dict(color="#3A7CA5"), name="Frequency"
+            x=labels, y=counts, marker=dict(color="#24AEFF"), name="Frequency"
         )
     )
     fig.add_trace(
@@ -334,8 +334,8 @@ def _fig_pareto(output: np.ndarray) -> go.Figure:
             x=labels,
             y=cumulative,
             mode="lines+markers",
-            marker=dict(color="#E76F51", size=8),
-            line=dict(color="#E76F51", width=2),
+            marker=dict(color="#C04AFF", size=8),
+            line=dict(color="#C04AFF", width=2),
             name="Cumulative %",
             yaxis="y2",
         )
@@ -371,7 +371,7 @@ def _fig_trend(output: np.ndarray) -> go.Figure:
             x=x,
             y=running_mean,
             mode="lines",
-            line=dict(color="#1D3557", width=2.2),
+            line=dict(color="#2323FF", width=2.2),
             name="Running mean",
         )
     )
@@ -380,7 +380,7 @@ def _fig_trend(output: np.ndarray) -> go.Figure:
             x=x,
             y=sampled,
             mode="lines",
-            line=dict(color="#A8DADC", width=1),
+            line=dict(color="#9C9CFF", width=1),
             opacity=0.6,
             name="Sample outcome",
         )
@@ -450,7 +450,7 @@ def _fig_scatter_primary(
             x=x,
             y=y,
             mode="markers",
-            marker=dict(color="#457B9D", size=6, opacity=0.45),
+            marker=dict(color="#4E269E", size=6, opacity=0.45),
             name=best_name,
         )
     )
@@ -469,8 +469,8 @@ def _fig_box(output: np.ndarray, inputs: dict[str, np.ndarray]) -> go.Figure:
                 x=values,
                 name=name,
                 boxpoints=False,
-                marker=dict(color="#3A7CA5"),
-                line=dict(color="#1D3557"),
+                marker=dict(color="#24AEFF"),
+                line=dict(color="#2323FF"),
             )
         )
     fig.update_xaxes(title_text="Value")
@@ -489,8 +489,8 @@ def _fig_violin(output: np.ndarray, inputs: dict[str, np.ndarray]) -> go.Figure:
                 box_visible=True,
                 meanline_visible=True,
                 points=False,
-                line_color="#1D3557",
-                fillcolor="rgba(69,123,157,0.35)",
+                line_color="#2323FF",
+                fillcolor="rgba(126,61,255,0.30)",
             )
         )
     fig.update_xaxes(title_text="Value")
@@ -521,15 +521,15 @@ def _fig_rich_statistics(stats: dict[str, float]) -> go.Figure:
             go.Table(
                 header=dict(
                     values=["Metric", "Value"],
-                    fill_color="#1D3557",
+                    fill_color="#2323FF",
                     font=dict(color="white", size=13),
                     align="left",
                 ),
                 cells=dict(
                     values=[labels, values],
-                    fill_color=["#f8fbff", "#ffffff"],
+                    fill_color=["#FFFFFF", "#FFFFFF"],
                     align="left",
-                    font=dict(color="#10233f", size=12),
+                    font=dict(color="#13138C", size=12),
                     height=30,
                 ),
             )
@@ -539,8 +539,8 @@ def _fig_rich_statistics(stats: dict[str, float]) -> go.Figure:
         title="Rich Statistics",
         template="plotly_white",
         margin=dict(l=40, r=40, t=70, b=20),
-        paper_bgcolor="#ffffff",
-        font=dict(family="Segoe UI, sans-serif", size=12, color="#10233f"),
+        paper_bgcolor="#FFFFFF",
+        font=dict(family="Segoe UI, sans-serif", size=12, color="#13138C"),
     )
     return fig
 
@@ -626,14 +626,14 @@ def export_pdf_report(
     stats_table = Table(stats_rows, colWidths=[2.3 * inch, 3.7 * inch])
     stats_table.setStyle(
         TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D3557")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2323FF")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#9CB6D8")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D3D3FF")),
             (
                 "ROWBACKGROUNDS",
                 (0, 1),
                 (-1, -1),
-                [colors.white, colors.HexColor("#F8FBFF")],
+                [colors.white, colors.HexColor("#FAFAFF")],
             ),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
@@ -686,14 +686,14 @@ def export_pdf_report(
         )
         capability_table.setStyle(
             TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D3557")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2323FF")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#9CB6D8")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D3D3FF")),
                 (
                     "ROWBACKGROUNDS",
                     (0, 1),
                     (-1, -1),
-                    [colors.white, colors.HexColor("#F8FBFF")],
+                    [colors.white, colors.HexColor("#FAFAFF")],
                 ),
                 ("FONTSIZE", (0, 0), (-1, -1), 9),
                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
@@ -718,14 +718,14 @@ def export_pdf_report(
     )
     assumption_table.setStyle(
         TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D3557")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2323FF")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#9CB6D8")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D3D3FF")),
             (
                 "ROWBACKGROUNDS",
                 (0, 1),
                 (-1, -1),
-                [colors.white, colors.HexColor("#F8FBFF")],
+                [colors.white, colors.HexColor("#FAFAFF")],
             ),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
             ("ALIGN", (0, 0), (-1, -1), "LEFT"),

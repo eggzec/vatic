@@ -94,6 +94,23 @@ source = "vcs"
 include = [
     "/vatic",
 ]
+# Brand assets are not Python sources, so they must be named explicitly or the
+# installed app falls back to a generic icon and a system font.
+artifacts = [
+    "/vatic/assets/*.png",
+    "/vatic/assets/*.svg",
+    "/vatic/assets/*.ico",
+    "/vatic/assets/fonts/*.ttf",
+    "/vatic/assets/fonts/OFL.txt",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/vatic",
+    "/assets",
+    "/README.md",
+    "/LICENSE",
+]
 
 [tool.ruff]
 # CI workflow definitions and the helper scripts they run are not

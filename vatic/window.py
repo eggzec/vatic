@@ -30,13 +30,13 @@ from pathlib import Path
 
 import mcerp
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QStatusBar,
@@ -78,7 +79,9 @@ from vatic.formula import evaluate_formula
 from vatic.logger import get_logger
 from vatic.reporting import export_pdf_report as write_pdf_report
 from vatic.reporting import export_pptx_report as write_pptx_report
+from vatic.resources import app_icon, load_bundled_fonts, rounded_logo_pixmap
 from vatic.storage import AnalysisStore
+from vatic.theme import build_stylesheet
 
 
 CHART_TYPES = [
@@ -125,7 +128,10 @@ class VaticWindow(QMainWindow):
         LOGGER.debug("Initializing vatic main window")
 
         self.setWindowTitle(f"vatic {__version__}")
-        self.resize(1320, 820)
+        # Set on the window as well as the application, so the icon is present
+        # even when VaticWindow is constructed directly instead of via main().
+        self.setWindowIcon(app_icon())
+        self.resize(1340, 860)
 
         self.store = AnalysisStore(Path.cwd() / "vatic.db")
         self.current_analysis_id: int | None = None
@@ -145,14 +151,22 @@ class VaticWindow(QMainWindow):
         ] = []
         self._export_jobs: dict[int, tuple[QThread, str, str, str]] = {}
 
+        load_bundled_fonts()
         self._build_menu_bar()
         self._apply_styles()
         self.setStatusBar(QStatusBar(self))
 
         root = QWidget()
         self.setCentralWidget(root)
-        root_layout = QGridLayout(root)
-        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        root_layout.addWidget(self._build_header())
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(14, 12, 14, 12)
 
         sheets_panel = self._build_sheets_section()
         assumptions_panel = self._build_assumptions_section()
@@ -162,28 +176,94 @@ class VaticWindow(QMainWindow):
         left_panel = QWidget()
         left_layout = QGridLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setHorizontalSpacing(8)
-        left_layout.setVerticalSpacing(4)
-        left_layout.setRowStretch(0, 1)
-        left_layout.setRowStretch(1, 6)
+        left_layout.setHorizontalSpacing(10)
+        left_layout.setVerticalSpacing(10)
+        left_layout.setRowStretch(0, 2)
+        left_layout.setRowStretch(1, 7)
         left_layout.setRowStretch(2, 3)
         left_layout.addWidget(sheets_panel, 0, 0)
         left_layout.addWidget(assumptions_panel, 1, 0)
         left_layout.addWidget(simulation_panel, 2, 0)
 
+        # The input sidebar is dense; letting it scroll keeps the window's
+        # minimum height inside a 1366x768 laptop screen instead of forcing a
+        # window taller than the display.
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_panel)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(360)
+
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
+        splitter.setHandleWidth(9)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(results_panel)
         splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 6)
+        splitter.setStretchFactor(1, 7)
+        splitter.setSizes([460, 900])
 
-        root_layout.addWidget(splitter, 0, 0)
+        body_layout.addWidget(splitter)
+        root_layout.addWidget(body, 1)
 
         self.load_defaults()
         self._reload_analysis_list()
         self._sync_row_actions()
         self._update_window_caption()
         LOGGER.debug("Vatic window ready")
+
+    def _build_header(self) -> QWidget:
+        """Build the branded application header.
+
+        Returns:
+            The header widget, carrying the logo, the active analysis name
+            and the primary simulation action.
+        """
+        header = QWidget()
+        header.setObjectName("appHeader")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
+
+        mark = QLabel()
+        mark.setPixmap(rounded_logo_pixmap(30))
+        mark.setFixedSize(QSize(30, 30))
+        layout.addWidget(mark)
+
+        wordmark_box = QWidget()
+        wordmark_layout = QVBoxLayout(wordmark_box)
+        wordmark_layout.setContentsMargins(0, 0, 0, 0)
+        wordmark_layout.setSpacing(0)
+
+        wordmark = QLabel("vatic")
+        wordmark.setObjectName("brandWordmark")
+        tagline = QLabel("OPEN SOURCE RISK ANALYSIS")
+        tagline.setObjectName("brandTagline")
+        wordmark_layout.addWidget(wordmark)
+        wordmark_layout.addWidget(tagline)
+        layout.addWidget(wordmark_box)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.VLine)
+        divider.setFixedWidth(1)
+        divider.setFixedHeight(30)
+        layout.addSpacing(6)
+        layout.addWidget(divider)
+        layout.addSpacing(6)
+
+        self.header_analysis_label = QLabel(self.current_analysis_name)
+        self.header_analysis_label.setObjectName("analysisName")
+        layout.addWidget(self.header_analysis_label)
+
+        layout.addStretch(1)
+
+        self.run_button = QPushButton("Run Simulation")
+        self.run_button.setProperty("variant", "primary")
+        self.run_button.setToolTip("Run the Monte Carlo simulation (F5)")
+        self.run_button.clicked.connect(self.run_simulation)
+        layout.addWidget(self.run_button)
+
+        return header
 
     def _build_menu_bar(self) -> None:
         menu = self.menuBar()
@@ -262,135 +342,8 @@ class VaticWindow(QMainWindow):
         help_menu.addAction("Info", self.show_info)
 
     def _apply_styles(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow {
-                background: #eef3fb;
-            }
-            QWidget {
-                color: #000000;
-                selection-background-color: #cfe3ff;
-                selection-color: #10233f;
-                font-family: "Segoe UI";
-                font-size: 9pt;
-            }
-            QMenuBar {
-                background: #f3f7fd;
-                border-bottom: 1px solid #c7d6ea;
-            }
-            QMenuBar::item {
-                background: transparent;
-                padding: 5px 10px;
-            }
-            QMenuBar::item:selected {
-                background: #dce8fb;
-                border: 1px solid #9cb8dd;
-            }
-            QMenu {
-                background: #ffffff;
-                border: 1px solid #a9bbd8;
-            }
-            QMenu::item:selected {
-                background: #dce8fb;
-                color: #0c2446;
-            }
-            QGroupBox {
-                background: #ffffff;
-                border: 1px solid #c8d6ea;
-                border-radius: 2px;
-                margin-top: 8px;
-                font-weight: 400;
-                color: #003399;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 4px;
-            }
-            QLineEdit, QComboBox, QSpinBox {
-                border: 1px solid #9cb6d8;
-                border-radius: 2px;
-                padding: 4px 6px;
-                background: #ffffff;
-                color: #000000;
-                selection-background-color: #cfe3ff;
-                selection-color: #10233f;
-            }
-            QTableWidget {
-                gridline-color: #dbe4f2;
-                border: 1px solid #9cb6d8;
-                border-radius: 2px;
-                background: #ffffff;
-                color: #000000;
-                selection-background-color: #cfe3ff;
-                selection-color: #10233f;
-            }
-            QTableWidget::item:selected {
-                color: #10233f;
-                background: #cfe3ff;
-            }
-            QHeaderView::section {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #f6f9ff, stop:1 #e3ecf9);
-                color: #003399;
-                padding: 5px;
-                border: none;
-                border-right: 1px solid #c8d6ea;
-                border-bottom: 1px solid #c8d6ea;
-                font-weight: 400;
-            }
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #e6eef9);
-                border: 1px solid #a8bcd8;
-                border-radius: 2px;
-                padding: 4px 10px;
-                color: #003399;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #d9e7fb);
-                border: 1px solid #7ea2d8;
-            }
-            QPushButton:pressed {
-                background: #d6e4f8;
-            }
-            QGroupBox#calculatorBox QPushButton[calcKey="true"] {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #eaf1fc);
-                border: 1px solid #afc1db;
-                font-weight: 400;
-            }
-            QGroupBox#calculatorBox QPushButton[calcKey="true"]:hover {
-                background: #dce8fa;
-                border: 1px solid #7ea2d8;
-            }
-            QLabel {
-                color: #000000;
-            }
-            QListWidget {
-                border: 1px solid #9cb6d8;
-                border-radius: 2px;
-                background: #ffffff;
-            }
-            QListWidget::item {
-                padding: 4px;
-            }
-            QListWidget::item:selected {
-                background: #cfe3ff;
-                color: #10233f;
-            }
-            QStatusBar {
-                background: #edf3fb;
-                border-top: 1px solid #c7d6ea;
-            }
-            QSplitter::handle {
-                background: #d2deef;
-                width: 5px;
-            }
-            """
-        )
+        """Install the brand style sheet on the whole application."""
+        self.setStyleSheet(build_stylesheet())
 
     def _build_sheets_section(self) -> QWidget:
         sheet = QWidget()
@@ -417,7 +370,9 @@ class VaticWindow(QMainWindow):
         self.analysis_list.itemSelectionChanged.connect(self._sync_row_actions)
 
         self.analysis_meta_label = QLabel("No analysis loaded")
+        self.analysis_meta_label.setObjectName("metaLabel")
 
+        box_layout.setSpacing(8)
         box_layout.addWidget(self.analysis_search_input)
         box_layout.addWidget(self.analysis_list)
         box_layout.addWidget(self.analysis_meta_label)
@@ -430,8 +385,21 @@ class VaticWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        box = QGroupBox()
+        box = QGroupBox("Assumptions")
         box_layout = QVBoxLayout(box)
+        box_layout.setSpacing(8)
+
+        assumption_actions = QHBoxLayout()
+        assumption_actions.setSpacing(6)
+        self.add_variable_button = QPushButton("Add Variable")
+        self.add_variable_button.clicked.connect(self.add_row)
+        self.remove_variable_button = QPushButton("Remove")
+        self.remove_variable_button.setProperty("variant", "ghost")
+        self.remove_variable_button.clicked.connect(self.remove_selected_rows)
+        assumption_actions.addWidget(self.add_variable_button)
+        assumption_actions.addWidget(self.remove_variable_button)
+        assumption_actions.addStretch(1)
+        box_layout.addLayout(assumption_actions)
 
         self.assumption_table = QTableWidget(0, 3)
         self.assumption_table.setHorizontalHeaderLabels([
@@ -447,7 +415,9 @@ class VaticWindow(QMainWindow):
             self._sync_row_actions
         )
         self.assumption_table.itemChanged.connect(self._on_model_input_changed)
-        self.assumption_table.setMinimumHeight(220)
+        self.assumption_table.setMinimumHeight(120)
+        self.assumption_table.setAlternatingRowColors(True)
+        self.assumption_table.verticalHeader().setDefaultSectionSize(32)
         box_layout.addWidget(self.assumption_table)
 
         self.assumption_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -458,10 +428,23 @@ class VaticWindow(QMainWindow):
             self._handle_assumption_double_click
         )
 
-        formula_box = QWidget()
+        formula_box = QGroupBox("Forecast Formulas")
         formula_layout = QVBoxLayout(formula_box)
-        formula_layout.setContentsMargins(0, 0, 0, 0)
-        formula_layout.setSpacing(4)
+        formula_layout.setSpacing(8)
+
+        formula_actions = QHBoxLayout()
+        formula_actions.setSpacing(6)
+        self.add_formula_button = QPushButton("Add Formula")
+        self.add_formula_button.clicked.connect(self.add_formula_row)
+        self.remove_formula_button = QPushButton("Remove")
+        self.remove_formula_button.setProperty("variant", "ghost")
+        self.remove_formula_button.clicked.connect(
+            self.remove_selected_formula_rows
+        )
+        formula_actions.addWidget(self.add_formula_button)
+        formula_actions.addWidget(self.remove_formula_button)
+        formula_actions.addStretch(1)
+        formula_layout.addLayout(formula_actions)
 
         self.formula_table = QTableWidget(0, 5)
         self.formula_table.setHorizontalHeaderLabels([
@@ -493,7 +476,9 @@ class VaticWindow(QMainWindow):
         self.formula_table.customContextMenuRequested.connect(
             self._show_formula_context_menu
         )
-        self.formula_table.setMinimumHeight(160)
+        self.formula_table.setMinimumHeight(96)
+        self.formula_table.setAlternatingRowColors(True)
+        self.formula_table.verticalHeader().setDefaultSectionSize(30)
         formula_layout.addWidget(self.formula_table)
 
         assumptions_splitter = QSplitter(Qt.Vertical)
@@ -502,7 +487,7 @@ class VaticWindow(QMainWindow):
         assumptions_splitter.addWidget(formula_box)
         assumptions_splitter.setStretchFactor(0, 6)
         assumptions_splitter.setStretchFactor(1, 4)
-        assumptions_splitter.setSizes([420, 260])
+        assumptions_splitter.setSizes([300, 210])
 
         layout.addWidget(assumptions_splitter)
         return sheet
@@ -513,21 +498,27 @@ class VaticWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        controls_box = QGroupBox()
-        controls_form = QFormLayout(controls_box)
+        controls_box = QGroupBox("Simulation")
+        controls_row = QHBoxLayout(controls_box)
+        controls_row.setSpacing(10)
 
         self.iteration_spin = QSpinBox()
         self.iteration_spin.setRange(500, 200000)
         self.iteration_spin.setValue(10000)
         self.iteration_spin.setSingleStep(1000)
+        self.iteration_spin.setGroupSeparatorShown(True)
         self.iteration_spin.valueChanged.connect(self._on_model_input_changed)
 
-        controls_form.addRow("Iterations", self.iteration_spin)
+        iterations_label = QLabel("Iterations")
+        iterations_label.setObjectName("sectionTitle")
+        controls_row.addWidget(iterations_label)
+        controls_row.addWidget(self.iteration_spin, 1)
         layout.addWidget(controls_box)
 
-        calculator_box = QGroupBox()
+        calculator_box = QGroupBox("Formula Keypad")
         calculator_box.setObjectName("calculatorBox")
         calculator_grid = QGridLayout(calculator_box)
+        calculator_grid.setSpacing(5)
         button_rows: list[list[tuple[str, str]]] = [
             [
                 ("7", "7"),
@@ -582,8 +573,13 @@ class VaticWindow(QMainWindow):
         for row_idx, row_buttons in enumerate(button_rows):
             for col_idx, (label, token) in enumerate(row_buttons):
                 button = QPushButton(label)
-                button.setMinimumHeight(30)
-                button.setProperty("calcKey", True)
+                button.setMinimumHeight(28)
+                if token in {"__clear__", "__del__"}:
+                    button.setProperty("calcKey", "edit")
+                elif label.isalpha() and len(label) > 1:
+                    button.setProperty("calcKey", "fn")
+                else:
+                    button.setProperty("calcKey", "true")
                 if token == "__clear__":
                     button.clicked.connect(self._clear_formula)
                 elif token == "__del__":
@@ -687,41 +683,58 @@ class VaticWindow(QMainWindow):
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(1, 1)
 
-        chart_controls = QGroupBox()
+        chart_controls = QWidget()
+        chart_controls.setObjectName("chartToolbar")
         chart_controls_layout = QHBoxLayout(chart_controls)
+        chart_controls_layout.setContentsMargins(14, 10, 14, 10)
         self.chart_type_combo = QComboBox()
         self.chart_type_combo.addItems(CHART_TYPES)
         self.chart_type_combo.currentTextChanged.connect(
             self.render_selected_chart
         )
-        self.chart_type_combo.setMaximumWidth(220)
+        self.chart_type_combo.setMinimumWidth(170)
+        self.chart_type_combo.setMaximumWidth(240)
         self.scatter_var_combo = QComboBox()
         self.scatter_var_combo.currentTextChanged.connect(
             self.render_selected_chart
         )
-        self.scatter_var_combo.setMaximumWidth(220)
-        chart_controls_layout.addWidget(QLabel("Chart"))
+        self.scatter_var_combo.setMinimumWidth(170)
+        self.scatter_var_combo.setMaximumWidth(240)
+        chart_label = QLabel("CHART")
+        chart_label.setObjectName("sectionTitle")
+        series_label = QLabel("SERIES")
+        series_label.setObjectName("sectionTitle")
+        chart_controls_layout.addWidget(chart_label)
         chart_controls_layout.addWidget(self.chart_type_combo)
-        chart_controls_layout.addSpacing(8)
-        chart_controls_layout.addWidget(QLabel("Series"))
+        chart_controls_layout.addSpacing(14)
+        chart_controls_layout.addWidget(series_label)
         chart_controls_layout.addWidget(self.scatter_var_combo)
         chart_controls_layout.addStretch(1)
-        chart_controls.setMaximumHeight(74)
+        chart_controls.setMaximumHeight(58)
 
-        chart_box = QGroupBox()
+        chart_box = QWidget()
+        chart_box.setObjectName("chartFrame")
         chart_layout = QVBoxLayout(chart_box)
+        chart_layout.setContentsMargins(4, 4, 4, 4)
         self.canvas = PlotCanvas()
+        self.canvas.setMinimumHeight(200)
         chart_layout.addWidget(self.canvas)
 
-        self.stats_label = QLabel("Run a simulation to view results")
+        self.stats_label = QLabel(
+            "No results yet\n\n"
+            "Define your assumptions and forecast formulas, then run the "
+            "simulation to see\nstatistics and capability metrics here."
+        )
         self.stats_label.setObjectName("statsCard")
         self.stats_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.stats_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.stats_label.setStyleSheet(
-            "border: 1px solid #c8d6ea; background: #f8fbff; "
-            "padding: 10px; font-family: 'Consolas';"
-        )
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setMinimumHeight(96)
 
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.setRowStretch(1, 5)
+        layout.setRowStretch(2, 2)
         layout.addWidget(chart_controls, 0, 0, 1, 2)
         layout.addWidget(chart_box, 1, 0, 1, 2)
         layout.addWidget(self.stats_label, 2, 0, 1, 2)
@@ -1011,6 +1024,8 @@ class VaticWindow(QMainWindow):
         self.analysis_meta_label.setText(
             f"Active: {self.current_analysis_name}"
         )
+        if hasattr(self, "header_analysis_label"):
+            self.header_analysis_label.setText(self.current_analysis_name)
         self.statusBar().showMessage(
             f"Current analysis: {self.current_analysis_name}"
         )

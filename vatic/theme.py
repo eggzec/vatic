@@ -186,6 +186,13 @@ TOKENS: dict[str, str] = {
     "selection.bg": CYAN,
     "selection.fg": shade(BLUE, 0.55),
     "selection.soft": tint(CYAN, 0.30),
+    # Four light washes, one per logo hue. They differentiate the panels at a
+    # glance while staying inside the closed palette, and each is pale enough
+    # that ink.body still clears WCAG AA on top of it.
+    "wash.cyan": tint(CYAN, 0.13),
+    "wash.blue": tint(BLUE, 0.09),
+    "wash.violet": tint(VIOLET, 0.11),
+    "wash.magenta": tint(MAGENTA, 0.11),
 }
 
 #: Ordered categorical ramp for charts. Lightness is deliberately staggered so
@@ -231,6 +238,12 @@ def audit_contrast() -> list[tuple[str, str, float]]:
         ("ink.brand", "surface.sunken"),
         ("ink.onAccent", "accent"),
         ("ink.body", "accent.wash"),
+        ("ink.body", "wash.cyan"),
+        ("ink.body", "wash.blue"),
+        ("ink.body", "wash.violet"),
+        ("ink.body", "wash.magenta"),
+        ("ink.muted", "wash.violet"),
+        ("ink.muted", "wash.magenta"),
         ("ink.muted", "surface.hover"),
         ("selection.fg", "selection.bg"),
         ("ink.strong", "selection.soft"),
@@ -716,6 +729,19 @@ QWidget#keypadPanel {{
     border: 1px solid {border_hairline};
     border-radius: 12px;
 }}
+
+/* One light wash per panel, drawn from a different logo hue, so the sidebar
+   reads as distinct sections instead of one undifferentiated column. */
+QGroupBox#sheetsPanel {{ background: {wash_blue}; }}
+QGroupBox#sheetsPanel::title {{ color: {ink_brand}; }}
+QGroupBox#assumptionsPanel {{ background: {wash_cyan}; }}
+QGroupBox#assumptionsPanel::title {{ color: {ink_brand}; }}
+QGroupBox#formulasPanel {{ background: {wash_violet}; }}
+QGroupBox#formulasPanel::title {{ color: {accent_violet}; }}
+QGroupBox#simulationPanel {{ background: {wash_magenta}; }}
+QGroupBox#simulationPanel::title {{ color: {accent_magenta}; }}
+QGroupBox#calculatorBox {{ background: {wash_cyan}; }}
+QGroupBox#calculatorBox::title {{ color: {ink_brand}; }}
 QWidget#chartToolbar {{
     background: {surface_panel};
     border: 1px solid {border_hairline};

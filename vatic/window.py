@@ -30,10 +30,11 @@ from pathlib import Path
 
 import mcerp
 import numpy as np
-from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -152,6 +153,9 @@ class VaticWindow(QMainWindow):
         self._export_jobs: dict[int, tuple[QThread, str, str, str]] = {}
 
         load_bundled_fonts()
+        # Rounded popups need a translucent window or the square native
+        # window corners show through behind the border radius.
+        QApplication.instance().installEventFilter(self)
         self._build_menu_bar()
         self._apply_styles()
         self.setStatusBar(QStatusBar(self))
@@ -212,6 +216,44 @@ class VaticWindow(QMainWindow):
         self._update_window_caption()
         LOGGER.debug("Vatic window ready")
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Round popup windows and stop scroll wheels editing values.
+
+        Two separate fixes share this filter:
+
+        A ``QMenu`` and a combo box drop-down are top level windows, so a
+        border radius in the style sheet leaves the square native corners
+        painted behind the rounded edge unless the background is punched out.
+
+        A spin box or combo box inside the scrolling sidebar swallows the
+        wheel and silently edits itself, so a user scrolling past the
+        iteration count changes it by accident. Unfocused controls therefore
+        hand the wheel back to the scroll area.
+
+        Args:
+            watched: The object the event was sent to.
+            event: The event being delivered.
+
+        Returns:
+            True to swallow the event, otherwise the base class result.
+        """
+        if not isinstance(watched, QWidget):
+            return super().eventFilter(watched, event)
+
+        if event.type() == QEvent.Show and watched.isWindow():
+            if isinstance(watched, QMenu | QAbstractItemView):
+                if not watched.testAttribute(Qt.WA_TranslucentBackground):
+                    self._round_popup(watched)
+
+        if event.type() == QEvent.Wheel and isinstance(
+            watched, QComboBox | QSpinBox
+        ):
+            if not watched.hasFocus():
+                event.ignore()
+                return True
+
+        return super().eventFilter(watched, event)
+
     def _build_header(self) -> QWidget:
         """Build the branded application header.
 
@@ -264,6 +306,21 @@ class VaticWindow(QMainWindow):
         layout.addWidget(self.run_button)
 
         return header
+
+    @staticmethod
+    def _round_popup(widget: QWidget) -> None:
+        """Punch out a popup's square window so its border radius shows.
+
+        A menu or a combo box drop-down is a top level window. Giving it a
+        border radius in the style sheet otherwise leaves the square native
+        corners painted behind the rounded edge.
+
+        Args:
+            widget: The popup window to make translucent.
+        """
+        widget.setAttribute(Qt.WA_TranslucentBackground, True)
+        widget.setWindowFlag(Qt.FramelessWindowHint, True)
+        widget.setWindowFlag(Qt.NoDropShadowWindowHint, True)
 
     def _build_menu_bar(self) -> None:
         menu = self.menuBar()
@@ -341,6 +398,9 @@ class VaticWindow(QMainWindow):
         help_menu = menu.addMenu("&Help")
         help_menu.addAction("Info", self.show_info)
 
+        for submenu in menu.findChildren(QMenu):
+            self._round_popup(submenu)
+
     def _apply_styles(self) -> None:
         """Install the brand style sheet on the whole application."""
         self.setStyleSheet(build_stylesheet())
@@ -352,6 +412,7 @@ class VaticWindow(QMainWindow):
         layout.setSpacing(4)
 
         box = QGroupBox("Analysis Sheets")
+        box.setObjectName("sheetsPanel")
         box_layout = QVBoxLayout(box)
 
         self.analysis_search_input = QLineEdit()
@@ -386,6 +447,7 @@ class VaticWindow(QMainWindow):
         layout.setSpacing(4)
 
         box = QGroupBox("Assumptions")
+        box.setObjectName("assumptionsPanel")
         box_layout = QVBoxLayout(box)
         box_layout.setSpacing(8)
 
@@ -429,6 +491,7 @@ class VaticWindow(QMainWindow):
         )
 
         formula_box = QGroupBox("Forecast Formulas")
+        formula_box.setObjectName("formulasPanel")
         formula_layout = QVBoxLayout(formula_box)
         formula_layout.setSpacing(8)
 
@@ -499,6 +562,7 @@ class VaticWindow(QMainWindow):
         layout.setSpacing(4)
 
         controls_box = QGroupBox("Simulation")
+        controls_box.setObjectName("simulationPanel")
         controls_row = QHBoxLayout(controls_box)
         controls_row.setSpacing(10)
 
@@ -507,6 +571,7 @@ class VaticWindow(QMainWindow):
         self.iteration_spin.setValue(10000)
         self.iteration_spin.setSingleStep(1000)
         self.iteration_spin.setGroupSeparatorShown(True)
+        self.iteration_spin.setFocusPolicy(Qt.StrongFocus)
         self.iteration_spin.valueChanged.connect(self._on_model_input_changed)
 
         iterations_label = QLabel("Iterations")
@@ -692,12 +757,14 @@ class VaticWindow(QMainWindow):
         self.chart_type_combo.currentTextChanged.connect(
             self.render_selected_chart
         )
+        self.chart_type_combo.setFocusPolicy(Qt.StrongFocus)
         self.chart_type_combo.setMinimumWidth(170)
         self.chart_type_combo.setMaximumWidth(240)
         self.scatter_var_combo = QComboBox()
         self.scatter_var_combo.currentTextChanged.connect(
             self.render_selected_chart
         )
+        self.scatter_var_combo.setFocusPolicy(Qt.StrongFocus)
         self.scatter_var_combo.setMinimumWidth(170)
         self.scatter_var_combo.setMaximumWidth(240)
         chart_label = QLabel("CHART")
@@ -919,6 +986,7 @@ class VaticWindow(QMainWindow):
             self.assumption_table.selectRow(row)
 
         menu = QMenu(self)
+        self._round_popup(menu)
         edit_action = menu.addAction("Edit Parameters")
         edit_action.setEnabled(row >= 0)
         add_action = menu.addAction("Add Assumption")
@@ -938,6 +1006,7 @@ class VaticWindow(QMainWindow):
             self.formula_table.selectRow(row)
 
         menu = QMenu(self)
+        self._round_popup(menu)
         add_action = menu.addAction("Add Formula")
         remove_action = menu.addAction("Remove Selected")
         remove_action.setEnabled(row >= 0)

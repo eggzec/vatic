@@ -28,6 +28,7 @@ from functools import lru_cache
 from typing import Any
 
 import mcerp
+import numpy as np
 
 from vatic.logger import get_logger
 
@@ -187,3 +188,32 @@ def build_variable(
         type(built).__name__,
     )
     return built
+
+
+#: Sentinel meaning "draw a fresh, unpredictable sample set each run".
+RANDOM_SEED = 0
+
+
+def seed_sampler(seed: int | None) -> int | None:
+    """Make the next sampling run reproducible.
+
+    ``mcerp`` draws its Latin hypercube through numpy's legacy global random
+    state, so seeding that state is what pins a run down. Without it two runs
+    of the same model return different capability metrics and a different
+    tornado ordering, which is untenable when the output is used to sign off
+    a design or to assert anything in a test.
+
+    Args:
+        seed: Seed to install, or ``None``/:data:`RANDOM_SEED` to leave the
+            generator alone so every run differs.
+
+    Returns:
+        The seed that was installed, or ``None`` when the run is left random.
+    """
+    if seed is None or seed == RANDOM_SEED:
+        LOGGER.debug("Sampling left unseeded | runs will not be reproducible")
+        return None
+
+    np.random.seed(int(seed) % (2**32))
+    LOGGER.debug("Sampler seeded | seed=%s", seed)
+    return int(seed)

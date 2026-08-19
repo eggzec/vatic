@@ -45,7 +45,11 @@ import mcerp
 import numpy as np
 
 from vatic.analytics import compute_capability_metrics, compute_statistics
-from vatic.distributions import build_variable, get_distribution_spec
+from vatic.distributions import (
+    build_variable,
+    get_distribution_spec,
+    seed_sampler,
+)
 from vatic.formula import evaluate_formula
 
 
@@ -95,6 +99,10 @@ FORECASTS: tuple[tuple[str, str, float | None, float | None], ...] = (
 
 ITERATIONS = 10_000
 
+#: Fixed so the printed numbers and the tests are reproducible. Pass
+#: ``seed=None`` to run() for a fresh sample set each time.
+SEED = 20260819
+
 
 def build_assumptions() -> dict[str, object]:
     """Create one uncertain variable per toleranced dimension.
@@ -111,14 +119,19 @@ def build_assumptions() -> dict[str, object]:
     return variables
 
 
-def run() -> dict[str, dict[str, float]]:
+def run(seed: int | None = SEED) -> dict[str, dict[str, float]]:
     """Run the stack-up and report statistics for every characteristic.
+
+    Args:
+        seed: Sampler seed. The default fixes the run so the numbers are
+            reproducible; pass ``None`` for a fresh sample set.
 
     Returns:
         Mapping of characteristic name to its statistics, with capability
         metrics merged in for the two that carry spec limits.
     """
     mcerp.npts = ITERATIONS
+    seed_sampler(seed)
 
     context: dict[str, object] = dict(build_assumptions())
     results: dict[str, dict[str, float]] = {}

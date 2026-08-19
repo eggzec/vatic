@@ -133,3 +133,23 @@ def test_outputs_are_approximately_normal(results) -> None:
         stats = results[name]
         assert abs(stats["skewness"]) < 0.3
         assert stats["kurtosis"] == pytest.approx(3.0, abs=0.4)
+
+
+def test_run_is_reproducible_when_seeded() -> None:
+    """The same seed reproduces the run exactly."""
+    first = seal_tolerance.run(seed=4242)
+    second = seal_tolerance.run(seed=4242)
+
+    for name, stats in first.items():
+        for key, value in stats.items():
+            assert second[name][key] == pytest.approx(value, rel=1e-12), (
+                f"{name}.{key}"
+            )
+
+
+def test_different_seeds_give_different_samples() -> None:
+    """A different seed is a genuinely different sample set."""
+    first = seal_tolerance.run(seed=1)
+    second = seal_tolerance.run(seed=2)
+
+    assert first["gland_fill"]["mean"] != second["gland_fill"]["mean"]

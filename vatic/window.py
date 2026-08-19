@@ -71,10 +71,12 @@ from vatic.assumption import Assumption
 from vatic.chart import PlotCanvas
 from vatic.dialogs import ForecastDialog, ParameterDialog
 from vatic.distributions import (
+    RANDOM_SEED,
     build_variable,
     default_parameters,
     distribution_labels,
     get_distribution_spec,
+    seed_sampler,
 )
 from vatic.formula import evaluate_formula
 from vatic.logger import get_logger
@@ -583,10 +585,26 @@ class VaticWindow(QMainWindow):
         self.iteration_spin.setFocusPolicy(Qt.StrongFocus)
         self.iteration_spin.valueChanged.connect(self._on_model_input_changed)
 
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 2_147_483_647)
+        self.seed_spin.setValue(RANDOM_SEED)
+        self.seed_spin.setSpecialValueText("random")
+        self.seed_spin.setToolTip(
+            "Seed the sampler so a run can be reproduced exactly. "
+            "Leave it on 'random' for a fresh sample set each time."
+        )
+        self.seed_spin.setFocusPolicy(Qt.StrongFocus)
+        self.seed_spin.valueChanged.connect(self._on_model_input_changed)
+
         iterations_label = QLabel("Iterations")
         iterations_label.setObjectName("sectionTitle")
+        seed_label = QLabel("Seed")
+        seed_label.setObjectName("sectionTitle")
         controls_row.addWidget(iterations_label)
         controls_row.addWidget(self.iteration_spin, 1)
+        controls_row.addSpacing(10)
+        controls_row.addWidget(seed_label)
+        controls_row.addWidget(self.seed_spin, 1)
         layout.addWidget(controls_box)
 
         calculator_box = QGroupBox("Formula Keypad")
@@ -1748,9 +1766,11 @@ class VaticWindow(QMainWindow):
             formula_text = self._serialize_formula_rows()
 
             mcerp.npts = self.iteration_spin.value()
+            active_seed = seed_sampler(self.seed_spin.value())
             LOGGER.info(
-                "Starting simulation | iterations=%s | assumptions=%s | formulas=%s",
+                "Starting simulation | iterations=%s | seed=%s | assumptions=%s | formulas=%s",
                 mcerp.npts,
+                active_seed if active_seed is not None else "random",
                 len(assumptions),
                 formula_text,
             )

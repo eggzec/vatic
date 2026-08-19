@@ -417,6 +417,18 @@ QComboBox QAbstractItemView::item {{
     padding: 6px 10px;
     border-radius: 6px;
     min-height: 20px;
+    background: {surface_panel};
+    color: {ink_body};
+}}
+/* Styling ::item at all gives the popup's rows their own box model, at which
+   point the view's selection-background-color stops painting them while
+   selection-color still applies. That left the row under the cursor drawing
+   white text on a white row, so both states are painted explicitly. */
+QComboBox QAbstractItemView::item:selected,
+QComboBox QAbstractItemView::item:hover,
+QComboBox QAbstractItemView::item:focus {{
+    background: {selection_bg};
+    color: {selection_fg};
 }}
 
 /* Editors embedded in table cells drop the standalone control's generous

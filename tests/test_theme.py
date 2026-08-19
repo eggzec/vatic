@@ -330,3 +330,55 @@ def test_the_recorded_exception_still_matches_the_palette() -> None:
         TOKENS["selection.bg"].upper(),
     )
     assert contrast(*SELECTION_EXCEPTION) == pytest.approx(2.45, abs=0.05)
+
+
+def test_combo_popup_paints_its_own_item_states() -> None:
+    """The drop-down's rows must paint their own selected and hover states.
+
+    Styling ``::item`` gives the popup's rows their own box model, at which
+    point the view's ``selection-background-color`` stops painting them while
+    ``selection-color`` still applies. The row under the cursor then drew
+    white text on a white row and vanished, so both states have to be stated.
+    """
+    sheet = build_stylesheet()
+    highlight = TOKENS["selection.bg"].upper()
+
+    item_rule = re.search(
+        r"QComboBox QAbstractItemView::item\s*\{([^}]*)\}", sheet
+    )
+    assert item_rule, "the popup's items are not styled at all"
+
+    states = re.search(
+        r"QComboBox QAbstractItemView::item:selected[^{]*\{([^}]*)\}", sheet
+    )
+    assert states, "the popup's items have no selected state"
+    body = states.group(1).upper()
+    assert highlight in body, "the popup does not use the shared highlight"
+    assert "#FFFFFF" in body, "the popup's highlighted text is not white"
+
+
+def test_every_item_view_state_is_readable() -> None:
+    """No item-view state may leave text the same colour as its row."""
+    sheet = build_stylesheet()
+    offenders = []
+    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", sheet):
+        if "::item" not in selector:
+            continue
+        background = re.search(
+            r"\bbackground(?:-color)?\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        foreground = re.search(
+            r"(?<!-)\bcolor\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        if not background or not foreground:
+            continue
+        pair = (foreground.group(1).upper(), background.group(1).upper())
+        if pair == SELECTION_EXCEPTION:
+            continue
+        if contrast(*pair) < 4.5:
+            offenders.append((
+                selector.strip(),
+                *pair,
+                round(contrast(*pair), 2),
+            ))
+    assert not offenders, f"unreadable item states: {offenders}"

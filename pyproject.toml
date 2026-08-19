@@ -76,12 +76,20 @@ issues = "https://github.com/eggzec/vatic/issues"
 dev = [
     { include-group = "docs" },
     { include-group = "lint" },
+    { include-group = "test" },
+    { include-group = "examples" },
 ]
 docs = [
     "zensical>=0.0.23",
 ]
 lint = [
     "ruff==0.15.*",
+]
+test = [
+    "pytest>=8.0",
+]
+examples = [
+    "openpyxl>=3.1",
 ]
 
 [tool.uv]
@@ -157,3 +165,7 @@ ignore = [
 [tool.ruff.format]
 docstring-code-format = true
 skip-magic-trailing-comma = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,52 @@
+name: Tests
+
+on:
+  push:
+    branches: [ master ]
+
+  pull_request:
+    branches: [ master ]
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}/${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: Pytest (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+        python-version: [ '3.12', '3.13' ]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          # hatch-vcs derives the version from tags, so a shallow clone
+          # without them makes the build fail.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install project and test dependencies
+        run: uv sync --group test --group examples
+
+      - name: Run test suite
+        # The maths and the theme are head-less; only the Qt widget tests
+        # would need a display, and there are none yet.
+        run: uv run pytest
+
+      - name: Rebuild the example workbook
+        run: uv run python examples/build_seal_workbook.py
+
+      - name: Run the worked example
+        run: uv run python examples/seal_tolerance.py

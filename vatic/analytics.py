@@ -38,10 +38,31 @@ def compute_statistics(values: np.ndarray) -> dict[str, float]:
     LOGGER.debug("Computing statistics | sample_count=%s", values.size)
 
     percentiles = np.percentile(values, [1, 5, 50, 95, 99])
+
+    # Moments follow the original vatic conventions so results line up with
+    # the reference implementation: the variance is the population variance
+    # (ddof=0), skewness is the standardised third moment with no sample-size
+    # correction, and kurtosis is the Pearson form where a normal
+    # distribution sits at 3.0 rather than the excess form centred on zero.
+    mean = float(np.mean(values))
+    deviations = values - mean
+    variance = float(np.mean(deviations**2))
+    population_sigma = float(np.sqrt(variance))
+    if population_sigma <= 1e-8:
+        skewness = 0.0
+        kurtosis = 0.0
+    else:
+        skewness = float(np.mean(deviations**3) / population_sigma**3)
+        kurtosis = float(np.mean(deviations**4) / population_sigma**4)
+
     return {
         "samples": float(values.size),
-        "mean": float(np.mean(values)),
+        "mean": mean,
         "std": float(np.std(values, ddof=1)) if values.size > 1 else 0.0,
+        "variance": variance,
+        "skewness": skewness,
+        "kurtosis": kurtosis,
+        "kurtosis_excess": kurtosis - 3.0 if population_sigma > 1e-8 else 0.0,
         "min": float(np.min(values)),
         "max": float(np.max(values)),
         "p01": float(percentiles[0]),

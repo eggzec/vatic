@@ -69,7 +69,7 @@ from vatic.analytics import (
 )
 from vatic.assumption import Assumption
 from vatic.chart import PlotCanvas
-from vatic.dialogs import ParameterDialog
+from vatic.dialogs import ForecastDialog, ParameterDialog
 from vatic.distributions import (
     build_variable,
     default_parameters,
@@ -374,9 +374,14 @@ class VaticWindow(QMainWindow):
         edit_menu.addAction(self.remove_row_action)
 
         edit_menu.addSeparator()
-        self.add_formula_action = QAction("Add Formula", self)
-        self.add_formula_action.triggered.connect(self.add_formula_row)
+        self.add_formula_action = QAction("Add Formula...", self)
+        self.add_formula_action.triggered.connect(self.add_formula_via_dialog)
         edit_menu.addAction(self.add_formula_action)
+
+        self.edit_formula_action = QAction("Edit Formula...", self)
+        self.edit_formula_action.setEnabled(False)
+        self.edit_formula_action.triggered.connect(self.edit_selected_formula)
+        edit_menu.addAction(self.edit_formula_action)
 
         self.remove_formula_action = QAction("Remove Formula", self)
         self.remove_formula_action.setEnabled(False)
@@ -498,7 +503,7 @@ class VaticWindow(QMainWindow):
         formula_actions = QHBoxLayout()
         formula_actions.setSpacing(6)
         self.add_formula_button = QPushButton("Add Formula")
-        self.add_formula_button.clicked.connect(self.add_formula_row)
+        self.add_formula_button.clicked.connect(self.add_formula_via_dialog)
         self.remove_formula_button = QPushButton("Remove")
         self.remove_formula_button.setProperty("variant", "ghost")
         self.remove_formula_button.clicked.connect(
@@ -540,6 +545,10 @@ class VaticWindow(QMainWindow):
             self._show_formula_context_menu
         )
         self.formula_table.setMinimumHeight(96)
+        self.formula_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.formula_table.cellDoubleClicked.connect(
+            self._handle_formula_double_click
+        )
         self.formula_table.setAlternatingRowColors(True)
         self.formula_table.verticalHeader().setDefaultSectionSize(30)
         formula_layout.addWidget(self.formula_table)
@@ -858,6 +867,84 @@ class VaticWindow(QMainWindow):
             row, 4, QTableWidgetItem("" if target is None else str(target))
         )
 
+    def _handle_formula_double_click(self, row: int, _col: int) -> None:
+        """Open the formula editor for a double-clicked row.
+
+        Args:
+            row: Row that was double-clicked.
+            _col: Column that was double-clicked; every column opens the
+                same editor.
+        """
+        self.edit_formula_row(row)
+
+    def add_formula_via_dialog(self) -> None:
+        """Ask for a new forecast formula and append it when confirmed."""
+        dialog = ForecastDialog(parent=self)
+        if dialog.exec() != ForecastDialog.Accepted:
+            LOGGER.debug("Forecast dialog cancelled")
+            return
+        self._write_formula_row(self.formula_table.rowCount(), dialog.values())
+
+    def edit_formula_row(self, row: int) -> None:
+        """Edit an existing forecast formula in a dialog.
+
+        Args:
+            row: Index of the formula row to edit.
+        """
+        if not 0 <= row < self.formula_table.rowCount():
+            return
+
+        def cell(column: int) -> str:
+            item = self.formula_table.item(row, column)
+            return item.text() if item else ""
+
+        dialog = ForecastDialog(
+            name=cell(0),
+            expression=cell(1),
+            lsl=cell(2),
+            usl=cell(3),
+            target=cell(4),
+            parent=self,
+        )
+        if dialog.exec() != ForecastDialog.Accepted:
+            LOGGER.debug("Forecast edit cancelled | row=%s", row)
+            return
+        self._write_formula_row(row, dialog.values())
+
+    def edit_selected_formula(self) -> None:
+        """Edit whichever formula row is currently selected."""
+        row = self.formula_table.currentRow()
+        if row < 0:
+            QMessageBox.information(
+                self, "vatic", "Select a formula row to edit."
+            )
+            return
+        self.edit_formula_row(row)
+
+    def _write_formula_row(self, row: int, values: dict[str, str]) -> None:
+        """Write dialog values into a formula row, appending if needed.
+
+        Args:
+            row: Target row index; a row is appended when it does not exist.
+            values: Field values returned by :class:`ForecastDialog`.
+        """
+        if row >= self.formula_table.rowCount():
+            self.formula_table.insertRow(self.formula_table.rowCount())
+        for column, key in enumerate((
+            "name",
+            "expression",
+            "lsl",
+            "usl",
+            "target",
+        )):
+            self.formula_table.setItem(
+                row, column, QTableWidgetItem(values.get(key, ""))
+            )
+        self.formula_table.setCurrentCell(row, 1)
+        LOGGER.debug(
+            "Formula row written | row=%s | name=%s", row, values.get("name")
+        )
+
     def remove_selected_formula_rows(self) -> None:
         rows = sorted(
             {index.row() for index in self.formula_table.selectedIndexes()},
@@ -1007,13 +1094,18 @@ class VaticWindow(QMainWindow):
 
         menu = QMenu(self)
         self._round_popup(menu)
-        add_action = menu.addAction("Add Formula")
+        add_action = menu.addAction("Add Formula...")
+        edit_action = menu.addAction("Edit Formula...")
+        edit_action.setEnabled(row >= 0)
+        menu.addSeparator()
         remove_action = menu.addAction("Remove Selected")
         remove_action.setEnabled(row >= 0)
 
         chosen = menu.exec(self.formula_table.viewport().mapToGlobal(point))
         if chosen is add_action:
-            self.add_formula_row()
+            self.add_formula_via_dialog()
+        elif chosen is edit_action:
+            self.edit_formula_row(row)
         elif chosen is remove_action:
             self.remove_selected_formula_rows()
 
@@ -1041,6 +1133,7 @@ class VaticWindow(QMainWindow):
         self.edit_row_action.setEnabled(has_selection)
         self.load_analysis_action.setEnabled(has_analysis_selection)
         self.remove_formula_action.setEnabled(has_formula_selection)
+        self.edit_formula_action.setEnabled(has_formula_selection)
 
     def _selected_analysis_id(self) -> int | None:
         item = self.analysis_list.currentItem()

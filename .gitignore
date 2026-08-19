@@ -228,3 +228,6 @@ __marimo__/
 *.pdf
 *.pptx
 
+
+# Excel owner/lock files, created whenever a workbook is opened
+~$*

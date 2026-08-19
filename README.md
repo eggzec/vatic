@@ -1,4 +1,4 @@
-![Vatic](assets/vatic-banner.png)
+![Vatic](https://raw.githubusercontent.com/eggzec/vatic/master/assets/vatic-banner.png)
 
 # Vatic
 

@@ -219,3 +219,38 @@ def test_no_rule_paints_light_text_on_a_light_background() -> None:
                 round(ratio, 2),
             ))
     assert not failures, f"unreadable style sheet rules: {failures}"
+
+
+def test_selection_colours_are_readable_in_every_rule() -> None:
+    """Wherever a selection colour pair is set, it must be legible.
+
+    An item view draws cell text through its delegate, which uses
+    ``selection-color`` rather than the ``::item:selected`` rule. A rule that
+    changes the selection background without changing the text colour to
+    match leaves white text on a pale row.
+    """
+    sheet = build_stylesheet()
+    failures = []
+    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", sheet):
+        background = re.search(
+            r"selection-background-color\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        foreground = re.search(
+            r"selection-color\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        if not background:
+            continue
+        assert foreground, (
+            f"{selector.strip()} sets a selection background but no "
+            "selection-color, so the text colour is inherited and may not "
+            "suit it"
+        )
+        ratio = contrast(foreground.group(1), background.group(1))
+        if ratio < 4.5:
+            failures.append((
+                selector.strip(),
+                foreground.group(1),
+                background.group(1),
+                round(ratio, 2),
+            ))
+    assert not failures, f"unreadable selections: {failures}"

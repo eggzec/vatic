@@ -590,6 +590,11 @@ QTableWidget, QTableView {{
     border-radius: 10px;
     color: {ink_body};
     outline: none;
+    /* A cell's text is drawn by the delegate using these, not by the
+       ::item:selected rule below. Leaving them at the global white-on-blue
+       pair put white text on the pale selected row. */
+    selection-background-color: {selection_soft};
+    selection-color: {ink_strong};
 }}
 QTableWidget::item, QTableView::item {{ padding: 5px 7px; border: none; }}
 QTableWidget::item:selected, QTableView::item:selected {{

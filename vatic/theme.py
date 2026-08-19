@@ -185,9 +185,12 @@ TOKENS: dict[str, str] = {
     "accent.violet": VIOLET,
     "accent.magenta": MAGENTA,
     "accent.cyan": CYAN,
-    "selection.bg": BLUE,
+    # One highlight everywhere: the lightest logo hue, carrying white text.
+    # White on #24AEFF measures 2.45:1, below the WCAG AA threshold; it is a
+    # deliberate product choice and the contrast tests record it as such.
+    "selection.bg": CYAN,
     "selection.fg": WHITE,
-    "selection.soft": tint(BLUE, 0.12),
+    "selection.soft": tint(CYAN, 0.16),
     # Panel washes, one per logo hue, kept pale so near-black ink stays
     # comfortably legible on top of them.
     "wash.cyan": tint(CYAN, 0.10),
@@ -287,7 +290,10 @@ QMenuBar::item {{
     border-radius: 7px;
     color: {ink_body};
 }}
-QMenuBar::item:selected {{ background: {accent_wash}; color: {ink_brand}; }}
+QMenuBar::item:selected {{
+    background: {selection_bg};
+    color: {selection_fg};
+}}
 QMenuBar::item:pressed {{ background: {surface_pressed}; }}
 
 QMenu {{
@@ -301,7 +307,10 @@ QMenu::item {{
     border-radius: 7px;
     color: {ink_body};
 }}
-QMenu::item:selected {{ background: {accent}; color: {ink_on_accent}; }}
+QMenu::item:selected {{
+    background: {selection_bg};
+    color: {selection_fg};
+}}
 QMenu::item:disabled {{ color: {ink_muted}; }}
 QMenu::separator {{
     height: 1px;
@@ -401,8 +410,8 @@ QComboBox QAbstractItemView {{
     border-radius: 10px;
     padding: 5px;
     outline: none;
-    selection-background-color: {accent};
-    selection-color: {ink_on_accent};
+    selection-background-color: {selection_bg};
+    selection-color: {selection_fg};
 }}
 QComboBox QAbstractItemView::item {{
     padding: 6px 10px;
@@ -591,15 +600,14 @@ QTableWidget, QTableView {{
     color: {ink_body};
     outline: none;
     /* A cell's text is drawn by the delegate using these, not by the
-       ::item:selected rule below. Leaving them at the global white-on-blue
-       pair put white text on the pale selected row. */
-    selection-background-color: {selection_soft};
-    selection-color: {ink_strong};
+       ::item:selected rule below, so both have to be stated here. */
+    selection-background-color: {selection_bg};
+    selection-color: {selection_fg};
 }}
 QTableWidget::item, QTableView::item {{ padding: 5px 7px; border: none; }}
 QTableWidget::item:selected, QTableView::item:selected {{
-    background: {selection_soft};
-    color: {ink_strong};
+    background: {selection_bg};
+    color: {selection_fg};
 }}
 
 QHeaderView {{ background: transparent; }}
@@ -642,7 +650,10 @@ QListWidget::item, QListView::item {{
     margin: 1px 0;
 }}
 QListWidget::item:hover {{ background: {accent_wash}; }}
-QListWidget::item:selected {{ background: {accent}; color: {ink_on_accent}; }}
+QListWidget::item:selected {{
+    background: {selection_bg};
+    color: {selection_fg};
+}}
 
 /* ---------------------------------------------------------- scroll bars */
 QScrollBar:vertical {{

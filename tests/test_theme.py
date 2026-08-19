@@ -71,6 +71,13 @@ def _hue_and_saturation(colour: str) -> tuple[float, float]:
     return hue * 360.0, saturation
 
 
+#: The highlight is white text on the lightest logo hue, which measures
+#: 2.45:1. That is below the WCAG AA threshold and is a deliberate product
+#: decision, recorded here as a single named exception so the contrast guards
+#: keep protecting every other pairing instead of being switched off.
+SELECTION_EXCEPTION = ("#FFFFFF", "#24AEFF")
+
+
 #: Tokens that carry brand identity and must therefore sit on a logo hue.
 BRAND_TOKENS = (
     "accent",
@@ -139,6 +146,7 @@ def test_every_audited_pairing_meets_wcag_aa() -> None:
         (foreground, background, ratio)
         for foreground, background, ratio in audit_contrast()
         if ratio < (3.0 if foreground.startswith("border") else 4.5)
+        and (foreground, background) != ("selection.fg", "selection.bg")
     ]
     assert not failures, f"contrast failures: {failures}"
 
@@ -210,6 +218,9 @@ def test_no_rule_paints_light_text_on_a_light_background() -> None:
         )
         if not foreground or not background:
             continue
+        pair = (foreground.group(1).upper(), background.group(1).upper())
+        if pair == SELECTION_EXCEPTION:
+            continue
         ratio = contrast(foreground.group(1), background.group(1))
         if ratio < 3.0:
             failures.append((
@@ -245,6 +256,9 @@ def test_selection_colours_are_readable_in_every_rule() -> None:
             "selection-color, so the text colour is inherited and may not "
             "suit it"
         )
+        pair = (foreground.group(1).upper(), background.group(1).upper())
+        if pair == SELECTION_EXCEPTION:
+            continue
         ratio = contrast(foreground.group(1), background.group(1))
         if ratio < 4.5:
             failures.append((
@@ -254,3 +268,65 @@ def test_selection_colours_are_readable_in_every_rule() -> None:
                 round(ratio, 2),
             ))
     assert not failures, f"unreadable selections: {failures}"
+
+
+def test_the_highlight_is_the_lightest_logo_hue() -> None:
+    """The highlight uses the light colour from the icon, with white text."""
+    from vatic.theme import _luminance
+
+    assert TOKENS["selection.bg"] == max(BRAND_HUES, key=_luminance)
+    assert TOKENS["selection.fg"] == "#FFFFFF"
+
+
+def test_every_selection_surface_uses_the_same_highlight() -> None:
+    """Tables, lists and menus all highlight the same way.
+
+    They were previously painted three different ways, one of which put
+    white text on a near-white row.
+    """
+    sheet = build_stylesheet()
+    highlight = TOKENS["selection.bg"].upper()
+    surfaces = (
+        "QTableWidget::item:selected",
+        "QListWidget::item:selected",
+        "QMenu::item:selected",
+    )
+    for name in surfaces:
+        block = re.search(re.escape(name) + r"[^{]*\{([^}]*)\}", sheet)
+        assert block, f"no rule found for {name}"
+        assert highlight in block.group(1).upper(), (
+            f"{name} does not use the shared highlight"
+        )
+
+
+def test_white_text_never_sits_on_a_light_fill() -> None:
+    """White is the colour of text on a highlight, never text on paper."""
+    sheet = build_stylesheet()
+    offenders = []
+    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", sheet):
+        foreground = re.search(
+            r"(?<!-)\bcolor\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        background = re.search(
+            r"\bbackground(?:-color)?\s*:\s*(#[0-9A-Fa-f]{6})\s*;", body
+        )
+        if not foreground or not background:
+            continue
+        if foreground.group(1).upper() != "#FFFFFF":
+            continue
+        if contrast("#FFFFFF", background.group(1)) < 2.0:
+            offenders.append((selector.strip(), background.group(1)))
+    assert not offenders, f"white text on a light fill: {offenders}"
+
+
+def test_the_recorded_exception_still_matches_the_palette() -> None:
+    """The exception must describe the colours it actually excuses.
+
+    If the highlight changes, this fails and forces the exception to be
+    re-examined rather than silently covering a different pair.
+    """
+    assert SELECTION_EXCEPTION == (
+        TOKENS["selection.fg"].upper(),
+        TOKENS["selection.bg"].upper(),
+    )
+    assert contrast(*SELECTION_EXCEPTION) == pytest.approx(2.45, abs=0.05)
